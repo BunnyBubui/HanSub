@@ -9,10 +9,8 @@ import android.app.Service;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
-import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -61,6 +59,9 @@ public class LiveTranslateService extends Service implements RecognitionListener
     private LinearLayout overlay;
     private TextView zhView,thView;
     private WindowManager.LayoutParams params;
+    private boolean overlayMoved;
+    /** Widest the subtitle box gets. On a wide landscape screen it stays centred instead of stretching edge to edge. */
+    private static final int OVERLAY_MAX_DP=640;
 
     @Override public IBinder onBind(Intent intent) {return null;}
 
@@ -281,7 +282,7 @@ public class LiveTranslateService extends Service implements RecognitionListener
         speech(b,true);
         lastPartial="";
         retries=0;
-        restart(330);
+        restart(150);
     }
     @Override public void onError(int code) {
         if (!running) return;
@@ -298,9 +299,14 @@ public class LiveTranslateService extends Service implements RecognitionListener
         if (code==SpeechRecognizer.ERROR_NETWORK || code==SpeechRecognizer.ERROR_NETWORK_TIMEOUT) {
             caption("NETWORK","บริการรู้จำเสียงเชื่อมต่อไม่ได้ กำลังลองใหม่…");
         }
+        if ((code==SpeechRecognizer.ERROR_RECOGNIZER_BUSY || code==SpeechRecognizer.ERROR_CLIENT)
+                && recognizer!=null) {
+            // A stuck session blocks the next startListening; cancel it so the retry can start clean.
+            try {recognizer.cancel();} catch (RuntimeException ignored) {}
+        }
         retries=Math.min(retries+1,6);
         restart(code==SpeechRecognizer.ERROR_NO_MATCH ||
-                code==SpeechRecognizer.ERROR_SPEECH_TIMEOUT?900:Math.min(850L*retries,5000));
+                code==SpeechRecognizer.ERROR_SPEECH_TIMEOUT?450:Math.min(850L*retries,5000));
     }
     @Override public void onEvent(int eventType,Bundle data) {}
 
@@ -310,29 +316,26 @@ public class LiveTranslateService extends Service implements RecognitionListener
             overlay=new LinearLayout(this);
             overlay.setOrientation(LinearLayout.VERTICAL);
             overlay.setGravity(Gravity.CENTER);
-            overlay.setPadding(dp(13),dp(10),dp(13),dp(11));
-            GradientDrawable bg=new GradientDrawable();
-            bg.setColor(0xe811151a);
-            bg.setCornerRadius(dp(15));
-            bg.setStroke(dp(1),0x77f4bd7e);
-            overlay.setBackground(bg);
+            overlay.setPadding(dp(16),dp(11),dp(16),dp(12));
+            overlay.setBackground(Glass.panel(this,16,Glass.FILL_POP));
             zhView=new TextView(this);
             zhView.setGravity(Gravity.CENTER);
             zhView.setTextSize(14);
             zhView.setMaxLines(2);
-            zhView.setTextColor(0xfff4bd7e);
+            zhView.setTextColor(Glass.ACCENT);
             overlay.addView(zhView,new LinearLayout.LayoutParams(-1,-2));
             thView=new TextView(this);
             thView.setGravity(Gravity.CENTER);
             thView.setTextSize(20);
             thView.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
             thView.setMaxLines(3);
-            thView.setTextColor(Color.WHITE);
+            thView.setTextColor(Glass.TEXT);
             LinearLayout.LayoutParams thaiParams=new LinearLayout.LayoutParams(-1,-2);
             thaiParams.topMargin=dp(4);
             overlay.addView(thView,thaiParams);
+            Configuration config=getResources().getConfiguration();
             params=new WindowManager.LayoutParams(
-                    getResources().getDisplayMetrics().widthPixels-dp(26),
+                    overlayWidth(config),
                     WindowManager.LayoutParams.WRAP_CONTENT,
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
@@ -340,7 +343,7 @@ public class LiveTranslateService extends Service implements RecognitionListener
                         |WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                     PixelFormat.TRANSLUCENT);
             params.gravity=Gravity.BOTTOM|Gravity.CENTER_HORIZONTAL;
-            params.y=dp(85);
+            params.y=defaultOverlayY(config);
             overlay.setOnTouchListener(new android.view.View.OnTouchListener(){
                 float previousY;
                 @Override public boolean onTouch(android.view.View view,MotionEvent event) {
@@ -350,8 +353,8 @@ public class LiveTranslateService extends Service implements RecognitionListener
                     if (event.getActionMasked()==MotionEvent.ACTION_MOVE) {
                         int delta=Math.round(event.getRawY()-previousY);
                         previousY=event.getRawY();
-                        params.y=Math.max(dp(12),Math.min(
-                            getResources().getDisplayMetrics().heightPixels-dp(120),params.y-delta));
+                        overlayMoved=true;
+                        params.y=clampOverlayY(params.y-delta,getResources().getConfiguration());
                         if (windows!=null) windows.updateViewLayout(overlay,params);
                         return true;
                     }
@@ -364,10 +367,34 @@ public class LiveTranslateService extends Service implements RecognitionListener
         }
     }
 
+    /** Screen width minus a small margin, capped so the box stays readable in landscape. */
+    private int overlayWidth(Configuration config) {
+        int widthDp=config.screenWidthDp>0?config.screenWidthDp
+                :Math.round(getResources().getDisplayMetrics().widthPixels
+                    /getResources().getDisplayMetrics().density);
+        return dp(Math.max(200,Math.min(widthDp-26,OVERLAY_MAX_DP)));
+    }
+
+    private int screenHeightPx(Configuration config) {
+        return config.screenHeightDp>0?dp(config.screenHeightDp)
+                :getResources().getDisplayMetrics().heightPixels;
+    }
+
+    /** Distance from the bottom edge. Landscape screens are short, so the box sits lower there. */
+    private int defaultOverlayY(Configuration config) {
+        return dp(config.orientation==Configuration.ORIENTATION_LANDSCAPE?24:85);
+    }
+
+    private int clampOverlayY(int y,Configuration config) {
+        int max=Math.max(dp(12),screenHeightPx(config)-dp(120));
+        return Math.max(dp(12),Math.min(max,y));
+    }
+
     @Override public void onConfigurationChanged(Configuration config) {
         super.onConfigurationChanged(config);
         if (windows!=null && overlay!=null && params!=null) {
-            params.width=getResources().getDisplayMetrics().widthPixels-dp(26);
+            params.width=overlayWidth(config);
+            params.y=overlayMoved?clampOverlayY(params.y,config):defaultOverlayY(config);
             try {windows.updateViewLayout(overlay,params);}
             catch (RuntimeException ignored) {}
         }

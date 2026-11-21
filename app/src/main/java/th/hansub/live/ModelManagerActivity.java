@@ -2,7 +2,6 @@ package th.hansub.live;
 
 import android.app.Activity;
 import android.content.Intent;
-import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
 import android.speech.ModelDownloadListener;
@@ -10,9 +9,10 @@ import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
 import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.Drawable;
 import android.view.View;
-import android.view.WindowInsets;
+import android.view.Gravity;
+import android.widget.FrameLayout;
 import android.widget.Button;
 import android.widget.EditText;
 import android.text.InputType;
@@ -32,7 +32,7 @@ import java.util.Map;
 import java.util.Set;
 
 public class ModelManagerActivity extends Activity {
-    private static final int BG=0xff12151b, CARD=0xff222731, ACCENT=0xfff4bd7e, MUTED=0xffbbc3cd;
+    private static final int CARD=Glass.FILL, STRONG=Glass.FILL_STRONG, ACCENT=Glass.ACCENT, MUTED=Glass.TEXT2;
     private final RemoteModelManager manager=RemoteModelManager.getInstance();
     private final Map<String,TextView> packStatuses=new HashMap<>();
     private final Map<String,Button> packButtons=new HashMap<>();
@@ -47,28 +47,22 @@ public class ModelManagerActivity extends Activity {
         super.onCreate(state);
         ScrollView page=new ScrollView(this);
         page.setFillViewport(true);
-        page.setBackgroundColor(BG);
-        root=new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(20),dp(40),dp(20),dp(28));
-        page.addView(root);
+        page.setVerticalScrollBarEnabled(false);
+        page.setBackground(Glass.page());
+        // Capped width: on a wide landscape screen the form stays readable instead of stretching.
+        root=new Glass.Column(this,640);
+        root.setPadding(dp(20),dp(24),dp(20),dp(28));
+        page.addView(root,new FrameLayout.LayoutParams(-1,-2,Gravity.CENTER_HORIZONTAL));
         setContentView(page);
-        if (Build.VERSION.SDK_INT>=35) {
-            page.setOnApplyWindowInsetsListener((v,insets)-> {
-                android.graphics.Insets bars=insets.getInsets(WindowInsets.Type.systemBars());
-                root.setPadding(dp(20),bars.top+dp(24),dp(20),bars.bottom+dp(28));
-                return insets;
-            });
-            page.requestApplyInsets();
-        }
+        Glass.fitSystemBars(page);
 
         label("HAN SUB  /  AI MODELS",14,ACCENT,true);
         gap(12);
-        label("Model Manager",28,Color.WHITE,true);
+        label("Model Manager",28,Glass.TEXT,true);
         gap(9);
         label("ดาวน์โหลด เลือก และลบชุดโมเดลแปลที่มีอยู่จริงใน Google ML Kit",14,MUTED,false);
         gap(20);
-        label("ชุดโมเดลภาษา (On-device)",18,Color.WHITE,true);
+        label("ชุดโมเดลภาษา (On-device)",18,Glass.TEXT,true);
         gap(10);
         pack("zh","ภาษาจีน","ต้องใช้ในทุกโหมด");
         pack("th","ภาษาไทย","ต้องใช้ในทุกโหมด");
@@ -76,28 +70,28 @@ public class ModelManagerActivity extends Activity {
         feedback=label("กำลังตรวจสอบโมเดล…",13,ACCENT,false);
         gap(13);
 
-        label("เลือกโหมดการแปล",18,Color.WHITE,true);
+        label("เลือกโหมดการแปล",18,Glass.TEXT,true);
         gap(10);
-        fastButton=button("Fast • 中文 → ไทย (แนะนำ)",CARD,Color.WHITE);
+        fastButton=button("Fast • 中文 → ไทย (แนะนำ)",CARD,Glass.TEXT);
         fastButton.setOnClickListener(v->selectMode(ModelCatalog.FAST));
         root.addView(fastButton);
         gap(8);
-        pivotButton=button("Pivot • 中文 → English → ไทย (ทดลอง)",CARD,Color.WHITE);
+        pivotButton=button("Pivot • 中文 → English → ไทย (ทดลอง)",CARD,Glass.TEXT);
         pivotButton.setOnClickListener(v->selectMode(ModelCatalog.PIVOT));
         root.addView(pivotButton);
         gap(8);
-        cloudFastButton=button("Cloud Lite • Gemini 3.5 Flash-Lite",CARD,Color.WHITE);
+        cloudFastButton=button("Cloud Lite • Gemini 3.5 Flash-Lite",CARD,Glass.TEXT);
         cloudFastButton.setOnClickListener(v->selectMode(ModelCatalog.CLOUD_FAST));
         root.addView(cloudFastButton);
         gap(8);
-        cloudQualityButton=button("Cloud Quality • Gemini 3.8 Flash",CARD,Color.WHITE);
+        cloudQualityButton=button("Cloud Quality • Gemini 3.8 Flash",CARD,Glass.TEXT);
         cloudQualityButton.setOnClickListener(v->selectMode(ModelCatalog.CLOUD_QUALITY));
         root.addView(cloudQualityButton);
         gap(8);
         label("Fast เรียกแปลหนึ่งขั้นตอนจึงเหมาะกับซับสดมากกว่า\n"
                 +"Pivot แปลสองขั้นตอน อาจช้ากว่าและไม่ได้รับประกันว่าแม่นยำขึ้น",12,MUTED,false);
         gap(12);
-        Button benchmarkButton=button("ทดสอบ Fast เทียบ Pivot บนเครื่องนี้",0xff353d4a,Color.WHITE);
+        Button benchmarkButton=button("ทดสอบ Fast เทียบ Pivot บนเครื่องนี้",STRONG,Glass.TEXT);
         benchmarkOutput=label("ใช้ประโยคบทสนทนาเดียวกัน เพื่อดูเวลาตอบสนองและผลแปลทั้ง 2 โหมด",12,MUTED,false);
         benchmarkButton.setOnClickListener(v->{
             if (getSharedPreferences("hansub",MODE_PRIVATE).getBoolean("running",false)) {
@@ -118,13 +112,13 @@ public class ModelManagerActivity extends Activity {
         root.addView(benchmarkButton);
         gap(9);
         gap(18);
-        label("ผลความเร็วจากการแปลจริง (P50/P95)",18,Color.WHITE,true);
+        label("ผลความเร็วจากการแปลจริง (P50/P95)",18,Glass.TEXT,true);
         gap(8);
         performance=label("ยังไม่มีข้อมูล",13,MUTED,false);
         showPerformance();
         gap(18);
 
-        label("Context AI • ตั้งค่าเซิร์ฟเวอร์",18,Color.WHITE,true);
+        label("Context AI • ตั้งค่าเซิร์ฟเวอร์",18,Glass.TEXT,true);
         gap(8);
         label("Cloud แปลประโยคสุดท้ายโดยใช้บริบทก่อนหน้าได้สูงสุด 6 ประโยค "
             +"และชื่อที่กำหนดเอง เมื่อเน็ตล่มจะกลับไปใช้ ML Kit บนเครื่อง",12,MUTED,false);
@@ -137,7 +131,7 @@ public class ModelManagerActivity extends Activity {
         token.setText(getSharedPreferences("hansub",MODE_PRIVATE).getString("proxy_token",""));
         root.addView(token);
         gap(9);
-        label("ชื่อจีน=ชื่อไทย (หนึ่งชื่อต่อบรรทัด)",13,Color.WHITE,true);
+        label("ชื่อจีน=ชื่อไทย (หนึ่งชื่อต่อบรรทัด)",13,Glass.TEXT,true);
         gap(6);
         EditText names=field("张总=ประธานจาง\n小雨=เสี่ยวอวี่",false);
         names.setSingleLine(false);
@@ -145,7 +139,7 @@ public class ModelManagerActivity extends Activity {
         names.setText(getSharedPreferences("hansub",MODE_PRIVATE).getString("character_names",""));
         root.addView(names);
         gap(8);
-        Button save=button("บันทึก Cloud และรายชื่อตัวละคร",ACCENT,BG);
+        Button save=button("บันทึก Cloud และรายชื่อตัวละคร",ACCENT,Glass.ON_ACCENT);
         save.setOnClickListener(v->{
             String url=endpoint.getText().toString().trim();
             String secret=token.getText().toString().trim();
@@ -168,17 +162,17 @@ public class ModelManagerActivity extends Activity {
             +"และห้ามใส่ Gemini API key ในแอป",12,MUTED,false);
         gap(18);
 
-        label("โมเดลรู้จำเสียงจีน",18,Color.WHITE,true);
+        label("โมเดลรู้จำเสียงจีน",18,Glass.TEXT,true);
         gap(9);
-        defaultSpeechButton=button("Speech • ระบบ Android (ค่าเริ่มต้น)",CARD,Color.WHITE);
+        defaultSpeechButton=button("Speech • ระบบ Android (ค่าเริ่มต้น)",CARD,Glass.TEXT);
         defaultSpeechButton.setOnClickListener(v->selectSpeech(ModelCatalog.SPEECH_DEFAULT));
         root.addView(defaultSpeechButton);
         gap(8);
-        offlineSpeechButton=button("Speech • On-device เท่านั้น (ถ้ารองรับ)",CARD,Color.WHITE);
+        offlineSpeechButton=button("Speech • On-device เท่านั้น (ถ้ารองรับ)",CARD,Glass.TEXT);
         offlineSpeechButton.setOnClickListener(v->selectSpeech(ModelCatalog.SPEECH_OFFLINE));
         root.addView(offlineSpeechButton);
         gap(8);
-        Button downloadSpeech=button("ขอดาวน์โหลดชุดรู้จำเสียงจีนผ่าน Android",0xff353d4a,Color.WHITE);
+        Button downloadSpeech=button("ขอดาวน์โหลดชุดรู้จำเสียงจีนผ่าน Android",STRONG,Glass.TEXT);
         downloadSpeech.setOnClickListener(v->downloadSpeech());
         root.addView(downloadSpeech);
         gap(10);
@@ -194,16 +188,16 @@ public class ModelManagerActivity extends Activity {
         LinearLayout panel=new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setPadding(dp(14),dp(13),dp(14),dp(13));
-        panel.setBackground(background(CARD));
+        panel.setBackground(Glass.panel(this,18,CARD));
         root.addView(panel,new LinearLayout.LayoutParams(-1,-2));
-        TextView title=text(name+"  /  "+lang,16,Color.WHITE,true);
+        TextView title=text(name+"  /  "+lang,16,Glass.TEXT,true);
         panel.addView(title);
         TextView detail=text(description,12,MUTED,false);
         panel.addView(detail);
         TextView status=text("กำลังตรวจสอบ…",12,ACCENT,false);
         panel.addView(status);
         packStatuses.put(lang,status);
-        Button action=button("ดาวน์โหลด",0xff393f49,Color.WHITE);
+        Button action=button("ดาวน์โหลด",STRONG,Glass.TEXT);
         action.setOnClickListener(v->togglePack(lang));
         panel.addView(action);
         packButtons.put(lang,action);
@@ -251,11 +245,12 @@ public class ModelManagerActivity extends Activity {
     private EditText field(String hint,boolean secret) {
         EditText e=new EditText(this);
         e.setHint(hint);
-        e.setTextColor(Color.WHITE);
+        e.setTextColor(Glass.TEXT);
         e.setHintTextColor(MUTED);
         e.setTextSize(14);
         e.setPadding(dp(12),dp(12),dp(12),dp(12));
         e.setBackground(background(CARD));
+        e.setHighlightColor(Glass.alpha(ACCENT,0x55));
         if (secret) e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         return e;
     }
@@ -298,7 +293,7 @@ public class ModelManagerActivity extends Activity {
     }
 
     private void selected(Button b,boolean active) {
-        b.setTextColor(active?BG:Color.WHITE);
+        b.setTextColor(active?Glass.ON_ACCENT:Glass.TEXT);
         b.setBackground(background(active?ACCENT:CARD));
     }
 
@@ -369,13 +364,10 @@ public class ModelManagerActivity extends Activity {
     }
     private void gap(int h) {View v=new View(this);root.addView(v,new LinearLayout.LayoutParams(1,dp(h)));}
     private Button button(String value,int color,int textColor) {
-        Button b=new Button(this);
-        b.setText(value);b.setAllCaps(false);b.setTextColor(textColor);b.setTextSize(14);
-        b.setMinHeight(dp(49));b.setBackground(background(color));return b;
+        return Glass.button(this,value,color,textColor);
     }
-    private GradientDrawable background(int color) {
-        GradientDrawable d=new GradientDrawable();
-        d.setColor(color);d.setCornerRadius(dp(13));return d;
+    private Drawable background(int color) {
+        return Glass.panel(this,14,color);
     }
-    private int dp(float v) {return Math.round(v*getResources().getDisplayMetrics().density);}
+    private int dp(float v) {return Glass.dp(this,v);}
 }
