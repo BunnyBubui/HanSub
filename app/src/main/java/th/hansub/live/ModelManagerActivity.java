@@ -14,6 +14,8 @@ import android.graphics.drawable.GradientDrawable;
 import android.view.View;
 import android.view.WindowInsets;
 import android.widget.Button;
+import android.widget.EditText;
+import android.text.InputType;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -37,7 +39,8 @@ public class ModelManagerActivity extends Activity {
     private final Set<String> installed=new HashSet<>();
     private LinearLayout root;
     private TextView feedback, benchmarkOutput;
-    private Button fastButton, pivotButton, defaultSpeechButton, offlineSpeechButton;
+    private Button fastButton, pivotButton, cloudFastButton, cloudQualityButton, defaultSpeechButton, offlineSpeechButton;
+    private TextView performance;
     private SpeechRecognizer speechDownloader;
 
     @Override public void onCreate(Bundle state) {
@@ -83,6 +86,14 @@ public class ModelManagerActivity extends Activity {
         pivotButton.setOnClickListener(v->selectMode(ModelCatalog.PIVOT));
         root.addView(pivotButton);
         gap(8);
+        cloudFastButton=button("Cloud Lite • Gemini 3.5 Flash-Lite",CARD,Color.WHITE);
+        cloudFastButton.setOnClickListener(v->selectMode(ModelCatalog.CLOUD_FAST));
+        root.addView(cloudFastButton);
+        gap(8);
+        cloudQualityButton=button("Cloud Quality • Gemini 3.8 Flash",CARD,Color.WHITE);
+        cloudQualityButton.setOnClickListener(v->selectMode(ModelCatalog.CLOUD_QUALITY));
+        root.addView(cloudQualityButton);
+        gap(8);
         label("Fast เรียกแปลหนึ่งขั้นตอนจึงเหมาะกับซับสดมากกว่า\n"
                 +"Pivot แปลสองขั้นตอน อาจช้ากว่าและไม่ได้รับประกันว่าแม่นยำขึ้น",12,MUTED,false);
         gap(12);
@@ -106,6 +117,55 @@ public class ModelManagerActivity extends Activity {
         });
         root.addView(benchmarkButton);
         gap(9);
+        gap(18);
+        label("ผลความเร็วจากการแปลจริง (P50/P95)",18,Color.WHITE,true);
+        gap(8);
+        performance=label("ยังไม่มีข้อมูล",13,MUTED,false);
+        showPerformance();
+        gap(18);
+
+        label("Context AI • ตั้งค่าเซิร์ฟเวอร์",18,Color.WHITE,true);
+        gap(8);
+        label("Cloud แปลประโยคสุดท้ายโดยใช้บริบทก่อนหน้าได้สูงสุด 6 ประโยค "
+            +"และชื่อที่กำหนดเอง เมื่อเน็ตล่มจะกลับไปใช้ ML Kit บนเครื่อง",12,MUTED,false);
+        gap(10);
+        EditText endpoint=field("https://YOUR-CLOUD-RUN-URL/translate",false);
+        endpoint.setText(getSharedPreferences("hansub",MODE_PRIVATE).getString("proxy_url",""));
+        root.addView(endpoint);
+        gap(8);
+        EditText token=field("Client token (ไม่ใช่ Gemini API key)",true);
+        token.setText(getSharedPreferences("hansub",MODE_PRIVATE).getString("proxy_token",""));
+        root.addView(token);
+        gap(9);
+        label("ชื่อจีน=ชื่อไทย (หนึ่งชื่อต่อบรรทัด)",13,Color.WHITE,true);
+        gap(6);
+        EditText names=field("张总=ประธานจาง\\n小雨=เสี่ยวอวี่",false);
+        names.setSingleLine(false);
+        names.setMinLines(3);
+        names.setText(getSharedPreferences("hansub",MODE_PRIVATE).getString("character_names",""));
+        root.addView(names);
+        gap(8);
+        Button save=button("บันทึก Cloud และรายชื่อตัวละคร",ACCENT,BG);
+        save.setOnClickListener(v->{
+            String url=endpoint.getText().toString().trim();
+            String secret=token.getText().toString().trim();
+            if ((!url.isEmpty() && (!url.startsWith("https://") || !url.endsWith("/translate")))
+                    || (url.length()>0 && secret.length()<16)) {
+                feedback.setText("ต้องใช้ HTTPS URL ที่ลงท้าย /translate และ Client token อย่างน้อย 16 ตัว");
+                return;
+            }
+            getSharedPreferences("hansub",MODE_PRIVATE).edit()
+                .putString("proxy_url",url)
+                .putString("proxy_token",secret)
+                .putString("character_names",names.getText().toString())
+                .apply();
+            feedback.setText("บันทึกแล้ว • ใช้กับการแปลครั้งถัดไป");
+        });
+        root.addView(save);
+        gap(7);
+        label("โหมด Cloud ต้อง deploy backend และมี Gemini API key ฝั่งเซิร์ฟเวอร์ก่อน "
+            +"ข้อความจีนและบริบทจะถูกส่งไปยัง URL ที่ตั้งค่า โปรดใช้เซิร์ฟเวอร์ที่เชื่อถือได้ "
+            +"และห้ามใส่ Gemini API key ในแอป",12,MUTED,false);
         gap(18);
 
         label("โมเดลรู้จำเสียงจีน",18,Color.WHITE,true);
@@ -188,6 +248,27 @@ public class ModelManagerActivity extends Activity {
         }
     }
 
+    private EditText field(String hint,boolean secret) {
+        EditText e=new EditText(this);
+        e.setHint(hint);
+        e.setTextColor(Color.WHITE);
+        e.setHintTextColor(MUTED);
+        e.setTextSize(14);
+        e.setPadding(dp(12),dp(12),dp(12),dp(12));
+        e.setBackground(background(CARD));
+        if (secret) e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        return e;
+    }
+
+    private void showPerformance() {
+        if (performance==null) return;
+        performance.setText(
+                "Fast (ML Kit) • "+TranslationStats.summary(this,ModelCatalog.FAST)+"\\n"
+                +"Pivot • "+TranslationStats.summary(this,ModelCatalog.PIVOT)+"\\n"
+                +"Cloud Lite • "+TranslationStats.summary(this,ModelCatalog.CLOUD_FAST)+"\\n"
+                +"Cloud Quality • "+TranslationStats.summary(this,ModelCatalog.CLOUD_QUALITY));
+    }
+
     private void selectMode(String mode) {
         getSharedPreferences("hansub",MODE_PRIVATE).edit().putString("translation_mode",mode).apply();
         updateSelections();
@@ -210,6 +291,8 @@ public class ModelManagerActivity extends Activity {
         String speech=getSharedPreferences("hansub",MODE_PRIVATE).getString("speech_mode",ModelCatalog.SPEECH_DEFAULT);
         selected(fastButton,ModelCatalog.FAST.equals(mode));
         selected(pivotButton,ModelCatalog.PIVOT.equals(mode));
+        selected(cloudFastButton,ModelCatalog.CLOUD_FAST.equals(mode));
+        selected(cloudQualityButton,ModelCatalog.CLOUD_QUALITY.equals(mode));
         selected(defaultSpeechButton,!ModelCatalog.isOfflineSpeech(speech));
         selected(offlineSpeechButton,ModelCatalog.isOfflineSpeech(speech));
     }
@@ -248,7 +331,11 @@ public class ModelManagerActivity extends Activity {
         }
     }
 
-    @Override protected void onResume() {super.onResume();if (feedback!=null) refreshPacks();}
+    @Override protected void onResume() {
+        super.onResume();
+        if (feedback!=null) refreshPacks();
+        if (performance!=null) showPerformance();
+    }
     @Override protected void onDestroy() {
         if (speechDownloader!=null) {speechDownloader.destroy();speechDownloader=null;}
         super.onDestroy();
