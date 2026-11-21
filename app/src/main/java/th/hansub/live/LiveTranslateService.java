@@ -8,10 +8,13 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.pm.ServiceInfo;
 import android.content.res.Configuration;
 import android.graphics.PixelFormat;
 import android.graphics.drawable.GradientDrawable;
 import android.media.AudioFormat;
+import android.media.projection.MediaProjection;
+import android.media.projection.MediaProjectionManager;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
@@ -54,6 +57,10 @@ public class LiveTranslateService extends Service implements RecognitionListener
     private MicFeeder feeder;
     private ParcelFileDescriptor sessionSound;
     private int ownMicFailures;
+    /** Screen-capture consent, only held in "capture other apps' sound" mode. */
+    private MediaProjection projection;
+    private MediaProjection.Callback projectionCallback;
+    private boolean silenceHinted;
     private Translator direct, chineseEnglish, englishThai;
     private String mode=ModelCatalog.FAST;
     private boolean running,modelsReady;
@@ -85,11 +92,24 @@ public class LiveTranslateService extends Service implements RecognitionListener
                 || !Settings.canDrawOverlays(this)) {
             stopSelf();return START_NOT_STICKY;
         }
+        int resultCode=intent!=null?intent.getIntExtra("projection_code",0):0;
+        @SuppressWarnings("deprecation")
+        Intent projectionData=intent!=null?(Intent)intent.getParcelableExtra("projection_data"):null;
+        boolean playbackRequested=Build.VERSION.SDK_INT>=29 && projectionData!=null
+                && "playback".equals(getSharedPreferences("hansub",MODE_PRIVATE).getString("audio_path","own"));
         try {
             NotificationManager manager=getSystemService(NotificationManager.class);
             if (manager!=null) manager.createNotificationChannel(new NotificationChannel(
                     CHANNEL,"HanSub microphone",NotificationManager.IMPORTANCE_LOW));
-            startForeground(NOTIFICATION_ID,notification());
+            if (Build.VERSION.SDK_INT>=29) {
+                // Say exactly which kinds we use. Asking for screen capture without consent would be refused.
+                int type=ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                        |(playbackRequested?ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION:0);
+                startForeground(NOTIFICATION_ID,notification(),type);
+            } else {
+                startForeground(NOTIFICATION_ID,notification());
+            }
+            if (playbackRequested) openProjection(resultCode,projectionData);
         } catch (RuntimeException e) {
             stopSelf();return START_NOT_STICKY;
         }
@@ -210,11 +230,72 @@ public class LiveTranslateService extends Service implements RecognitionListener
 
     /** Opens our own microphone capture when the phone is Android 13+ and the setting is on. */
     private void openOwnMic() {
+        if (Build.VERSION.SDK_INT<33) return;
+        if (projection!=null) {
+            MicFeeder candidate=new MicFeeder();
+            if (candidate.startPlayback(projection)) {
+                feeder=candidate;
+                watchSilence();
+                return;
+            }
+            releaseProjection();
+            caption("MIC","จับเสียงจากแอปอื่นไม่ได้ ใช้ไมค์แทน");
+        }
         String path=getSharedPreferences("hansub",MODE_PRIVATE).getString("audio_path","own");
-        if (Build.VERSION.SDK_INT<33 || !"own".equals(path)) return;
+        if (!"own".equals(path) && !"playback".equals(path)) return;
         MicFeeder candidate=new MicFeeder();
-        if (candidate.start()) feeder=candidate;
+        if (candidate.startMic()) feeder=candidate;
         else caption("MIC","เปิดไมค์เองไม่ได้ ใช้ไมค์ระบบแทน (วิดีโออาจหยุดชั่วคราว)");
+    }
+
+    /** Takes the screen-capture consent the person gave in the app and keeps it while we listen. */
+    private void openProjection(int resultCode,Intent data) {
+        MediaProjectionManager manager=getSystemService(MediaProjectionManager.class);
+        if (manager==null || data==null) return;
+        try {
+            projection=manager.getMediaProjection(resultCode,data);
+            if (projection==null) return;
+            projectionCallback=new MediaProjection.Callback() {
+                @Override public void onStop() {
+                    // The person ended the capture from the system chip. Without it there is no sound.
+                    main.post(()->{if (running) stopSelf();});
+                }
+            };
+            projection.registerCallback(projectionCallback,main);
+        } catch (RuntimeException e) {
+            projection=null;
+        }
+    }
+
+    private void releaseProjection() {
+        if (projection==null) return;
+        try {
+            if (projectionCallback!=null) projection.unregisterCallback(projectionCallback);
+            projection.stop();
+        } catch (RuntimeException ignored) {
+            // Already stopped.
+        }
+        projection=null;
+        projectionCallback=null;
+    }
+
+    /**
+     * If the captured sound stays silent, say so once. Either the scene is quiet or the app that plays
+     * the video does not allow its sound to be captured.
+     */
+    private void watchSilence() {
+        main.postDelayed(new Runnable() {
+            @Override public void run() {
+                if (!running || feeder==null || !feeder.isPlayback()) return;
+                long silent=feeder.silentForMs();
+                if (silent<1500) silenceHinted=false;
+                if (silent>=20000 && !silenceHinted) {
+                    silenceHinted=true;
+                    caption("เงียบ","ไม่ได้ยินเสียงจากแอปที่เล่นอยู่ อาจเป็นฉากเงียบ หรือแอปนั้นห้ามดึงเสียง ลองสลับเป็นโหมดไมค์");
+                }
+                main.postDelayed(this,3000);
+            }
+        },3000);
     }
 
     /** Falls back to the system microphone. The old behaviour: works, but videos may pause. */
@@ -222,6 +303,7 @@ public class LiveTranslateService extends Service implements RecognitionListener
         if (feeder==null) return;
         feeder.stop();
         feeder=null;
+        releaseProjection();
         closeSessionSound();
         caption("MIC",reason+" ใช้ไมค์ระบบแทน (วิดีโออาจหยุดชั่วคราว)");
     }
@@ -545,6 +627,7 @@ public class LiveTranslateService extends Service implements RecognitionListener
         main.removeCallbacksAndMessages(null);
         if (recognizer!=null) {recognizer.cancel();recognizer.destroy();recognizer=null;}
         if (feeder!=null) {feeder.stop();feeder=null;}
+        releaseProjection();
         closeSessionSound();
         if (direct!=null) {direct.close();direct=null;}
         if (chineseEnglish!=null) {chineseEnglish.close();chineseEnglish=null;}

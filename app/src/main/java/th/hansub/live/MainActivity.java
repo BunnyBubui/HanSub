@@ -36,7 +36,7 @@ import java.util.List;
  * The app opens with Lumora's film-bar entrance; the permission sheet grows out of the spot that was tapped.
  */
 public class MainActivity extends Activity {
-    private static final int REQUEST_MIC = 102, REQUEST_NOTIFY = 103;
+    private static final int REQUEST_MIC = 102, REQUEST_NOTIFY = 103, REQUEST_PROJECTION = 104;
     private static final int KIND_MIC = 0, KIND_OVERLAY = 1, KIND_NOTIFY = 2;
     private static boolean checkedForUpdate;
 
@@ -48,6 +48,9 @@ public class MainActivity extends Activity {
     };
 
     private boolean landscape, pendingStart, sheetOpen, updateAvailable;
+    /** Consent to capture other apps' sound. It can be used once, so it is cleared after each start. */
+    private int projectionCode;
+    private Intent projectionData;
     private Boolean lastActive;
     private int bottomInset;
     private FrameLayout host;
@@ -105,8 +108,8 @@ public class MainActivity extends Activity {
         View.OnClickListener openPerms = v -> openSheet(false);
         View.OnClickListener checkUpdate = v -> onUpdateTile();
         TextView footer = Glass.text(this,
-                "ใช้ไมโครโฟนรับเสียง (ไม่ใช่การดึงเสียงภายในแอปหนัง)\n"
-                + "แนะนำให้ทดสอบกับลำโพงจากอีกเครื่องก่อน และดาวน์โหลดโมเดลจีน+ไทยล่วงหน้า\n"
+                "รับเสียงจากไมค์หรือจากแอปที่เล่นอยู่ เลือกได้ในหน้าโมเดลและโหมดแปล\n"
+                + "ดาวน์โหลดโมเดลจีน+ไทยล่วงหน้าเพื่อให้เริ่มแปลได้เร็ว\n"
                 + "Powered by Google Translate • การรู้จำเสียงขึ้นอยู่กับบริการของ Android",
                 12, Glass.TEXT3, false);
 
@@ -560,12 +563,49 @@ public class MainActivity extends Activity {
             return;
         }
         pendingStart = false;
+        if (wantsPlayback() && projectionData == null) {
+            askForScreenCapture();
+            return;
+        }
         Intent start = new Intent(this, LiveTranslateService.class).setAction(LiveTranslateService.ACTION_START);
+        if (projectionData != null) {
+            start.putExtra("projection_code", projectionCode);
+            start.putExtra("projection_data", projectionData);
+            projectionData = null;
+        }
         try {
             startForegroundService(start);
             status.setText("กำลังเตรียมโมเดลแปลภาษา…");
         } catch (RuntimeException error) {
             status.setText("เปิดไม่ได้: " + error.getClass().getSimpleName());
+        }
+    }
+
+    private boolean wantsPlayback() {
+        return Build.VERSION.SDK_INT >= 29
+                && "playback".equals(prefs().getString("audio_path", "own"));
+    }
+
+    /** Android asks for screen-capture consent before an app may record the sound other apps play. */
+    private void askForScreenCapture() {
+        try {
+            android.media.projection.MediaProjectionManager manager =
+                    getSystemService(android.media.projection.MediaProjectionManager.class);
+            startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_PROJECTION);
+        } catch (RuntimeException e) {
+            notice.show("เปิดหน้าขอสิทธิ์จับเสียงไม่ได้ ลองเปลี่ยนเป็นโหมดไมค์");
+        }
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQUEST_PROJECTION) return;
+        if (resultCode == RESULT_OK && data != null) {
+            projectionCode = resultCode;
+            projectionData = data;
+            startTranslation();
+        } else {
+            notice.show("ต้องอนุญาตก่อนจึงจะจับเสียงจากแอปอื่นได้ หรือเปลี่ยนเป็นโหมดไมค์");
         }
     }
 

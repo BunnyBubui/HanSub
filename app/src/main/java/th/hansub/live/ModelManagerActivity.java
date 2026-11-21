@@ -47,7 +47,7 @@ public class ModelManagerActivity extends Activity {
     private FrameLayout host;
     private TextView benchmarkOutput, performance;
     private Notice notice;
-    private Option fastOption, pivotOption, cloudFastOption, cloudQualityOption, defaultSpeech, offlineSpeech, ownMicOption, systemMicOption;
+    private Option fastOption, pivotOption, cloudFastOption, cloudQualityOption, defaultSpeech, offlineSpeech, ownMicOption, systemMicOption, playbackOption;
     private SpeechRecognizer speechDownloader;
 
     @Override public void onCreate(Bundle state) {
@@ -199,15 +199,19 @@ public class ModelManagerActivity extends Activity {
 
     private void buildAudioPath() {
         LinearLayout card=section("แหล่งเสียงที่ส่งให้ตัวรู้จำเสียง",
-                "ถ้าเปิดไมค์แล้ววิดีโอหยุดเอง ให้เลือกแบบแรก");
-        ownMicOption=option(card,"แอปรับเสียงเอง • วิดีโอไม่หยุด","ต้อง Android 13 ขึ้นไป");
+                "ใส่หูฟังอยู่ให้เลือกแบบแรก ส่วนแบบที่สองใช้ไมค์ฟังเสียงจากลำโพง และทั้งสองแบบไม่ทำให้วิดีโอหยุด");
+        playbackOption=option(card,"จับเสียงจากแอปที่เล่นอยู่ • ใช้กับหูฟังได้",
+                "Android 13 ขึ้นไป ระบบจะถามสิทธิ์จับภาพหน้าจอทุกครั้งที่เริ่ม ถ้าถามให้เลือกทั้งหน้าจอ "
+                + "แอปบางตัว เช่น Netflix ห้ามดึงเสียง");
+        playbackOption.setOnClickListener(v->selectAudioPath("playback"));
+        ownMicOption=option(card,"ไมค์ที่แอปเปิดเอง • วิดีโอไม่หยุด","ต้องเปิดลำโพง Android 13 ขึ้นไป");
         ownMicOption.setOnClickListener(v->selectAudioPath("own"));
         systemMicOption=option(card,"ไมค์ของระบบ Android • แบบเดิม","วิดีโออาจหยุดทุกครั้งที่ฟังประโยคใหม่");
         systemMicOption.setOnClickListener(v->selectAudioPath("system"));
     }
 
     private void selectAudioPath(String path) {
-        if ("own".equals(path) && Build.VERSION.SDK_INT<33) {
+        if (!"system".equals(path) && Build.VERSION.SDK_INT<33) {
             notice("แบบนี้ใช้ได้เฉพาะ Android 13 ขึ้นไป");
             return;
         }
@@ -441,10 +445,11 @@ public class ModelManagerActivity extends Activity {
         cloudQualityOption.setOn(ModelCatalog.CLOUD_QUALITY.equals(mode),animate);
         defaultSpeech.setOn(!ModelCatalog.isOfflineSpeech(speech),animate);
         offlineSpeech.setOn(ModelCatalog.isOfflineSpeech(speech),animate);
-        boolean own=Build.VERSION.SDK_INT>=33
-            && "own".equals(getSharedPreferences("hansub",MODE_PRIVATE).getString("audio_path","own"));
-        ownMicOption.setOn(own,animate);
-        systemMicOption.setOn(!own,animate);
+        String path=getSharedPreferences("hansub",MODE_PRIVATE).getString("audio_path","own");
+        boolean newPath=Build.VERSION.SDK_INT>=33;
+        playbackOption.setOn(newPath && "playback".equals(path),animate);
+        ownMicOption.setOn(newPath && "own".equals(path),animate);
+        systemMicOption.setOn(!newPath || "system".equals(path),animate);
     }
 
     private void downloadSpeech() {
