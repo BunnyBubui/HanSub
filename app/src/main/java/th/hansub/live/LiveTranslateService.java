@@ -23,6 +23,7 @@ import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
 import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.View;
 import android.view.WindowManager;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -318,6 +319,12 @@ public class LiveTranslateService extends Service implements RecognitionListener
             overlay.setGravity(Gravity.CENTER);
             overlay.setPadding(dp(16),dp(11),dp(16),dp(12));
             overlay.setBackground(Glass.panel(this,16,Glass.FILL_POP));
+            // A small grip on top: the box can be dragged up and down.
+            View grip=new View(this);
+            grip.setBackground(Glass.oval(Glass.alpha(Glass.TEXT,0x40)));
+            LinearLayout.LayoutParams gripParams=new LinearLayout.LayoutParams(dp(34),dp(3));
+            gripParams.bottomMargin=dp(7);
+            overlay.addView(grip,gripParams);
             zhView=new TextView(this);
             zhView.setGravity(Gravity.CENTER);
             zhView.setTextSize(14);
@@ -362,6 +369,14 @@ public class LiveTranslateService extends Service implements RecognitionListener
                 }
             });
             windows.addView(overlay,params);
+            if (!Motion.reduced(this)) {
+                // Appears with a soft spring, like Lumora's panels.
+                overlay.setAlpha(0f);
+                overlay.setScaleX(0.92f);
+                overlay.setScaleY(0.92f);
+                overlay.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(520)
+                        .setInterpolator(Motion.SPRING).start();
+            }
         } catch (RuntimeException error) {
             overlay=null;
         }
@@ -403,8 +418,16 @@ public class LiveTranslateService extends Service implements RecognitionListener
     private void caption(String chinese,String thai) {
         main.post(()->{
             if (zhView!=null && thView!=null && running) {
+                boolean changed=!thai.contentEquals(thView.getText());
                 zhView.setText(chinese);
                 thView.setText(thai);
+                if (changed && !Motion.reduced(this)) {
+                    // The new line rises into place instead of snapping.
+                    thView.setAlpha(0.35f);
+                    thView.setTranslationY(dp(4));
+                    thView.animate().alpha(1f).translationY(0f).setDuration(180)
+                            .setInterpolator(Motion.SOFT).start();
+                }
             }
         });
     }

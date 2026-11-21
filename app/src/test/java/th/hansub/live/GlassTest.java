@@ -35,6 +35,15 @@ public class GlassTest {
         assertTrue(brightness(Glass.BG_DEEP) <= brightness(Glass.BG));
     }
 
+    @Test public void springStartsAtZeroOvershootsAndSettlesOnOne() {
+        assertEquals(0f, Glass.spring(0f, 0.6f, 13.5f), 0f);
+        assertEquals(0f, Glass.spring(-1f, 0.6f, 13.5f), 0f);
+        float peak = 0f;
+        for (float t = 0f; t < 1f; t += 0.01f) peak = Math.max(peak, Glass.spring(t, 0.6f, 13.5f));
+        assertTrue("a spring below critical damping overshoots", peak > 1.02f);
+        assertEquals(1f, Glass.spring(3f, 0.6f, 13.5f), 0.001f);
+    }
+
     private static int brightness(int c) {
         return (((c >> 16) & 255) + ((c >> 8) & 255) + (c & 255)) / 3;
     }

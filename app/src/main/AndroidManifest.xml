@@ -10,7 +10,7 @@
     <queries>
         <intent><action android:name="android.speech.RecognitionService"/></intent>
     </queries>
-    <application android:allowBackup="false" android:label="HanSub" android:theme="@style/AppTheme" android:supportsRtl="true">
+    <application android:allowBackup="false" android:label="HanSub" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:theme="@style/AppTheme" android:supportsRtl="true">
         <activity android:name=".ModelManagerActivity" android:exported="false"/>
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>

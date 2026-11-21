@@ -7,3 +7,6 @@ local.properties
 captures/
 *.jks
 *.keystore
+
+# The shared debug key: every build is signed with it, so a new APK installs over the old one.
+!app/hansub-debug.keystore

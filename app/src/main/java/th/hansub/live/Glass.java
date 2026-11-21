@@ -6,7 +6,9 @@ import android.graphics.ColorFilter;
 import android.graphics.LinearGradient;
 import android.graphics.Outline;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.PixelFormat;
+import android.graphics.RadialGradient;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
@@ -15,7 +17,6 @@ import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.view.Gravity;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowInsets;
 import android.widget.Button;
@@ -26,14 +27,15 @@ import android.widget.TextView;
 /**
  * Shared look for every HanSub screen. It follows the "Graphite" theme of the Lumora camera app:
  * near-black page, charcoal glass panels with a soft light rim, one orange accent.
- * The colour maths is plain integer arithmetic so unit tests can run it without Android.
+ * Colour and spring maths here is plain arithmetic, so unit tests can run it without Android.
+ * Animation lives in {@link Motion}.
  */
 final class Glass {
     private Glass() {}
 
     static final int WHITE = 0xffffffff, BLACK = 0xff000000;
 
-    /** The five Graphite colours: accent, page, panel, text. */
+    /** The four Graphite colours: accent, page, panel, text. */
     static final int ACCENT = 0xffff9f45, BG = 0xff0a0a0b, PANEL = 0xff1c1c1f, TEXT = 0xfff5f5f4;
 
     /** Colours worked out from the four above, with the same formulas Lumora uses. */
@@ -77,6 +79,16 @@ final class Glass {
     static int top(int c) { return c == ACCENT ? ACCENT_HI : mix(c, TINT_TOP, weight(c)); }
     static int bottom(int c) { return c == ACCENT ? ACCENT_LO : mix(c, TINT_BOTTOM, weight(c) + 0.06f); }
 
+    /**
+     * Damped spring step response: 0 at {@code t = 0}, overshoots 1 and settles on it.
+     * {@code zeta} is the damping (below 1 overshoots), {@code w} the speed. Lumora uses it for every morph.
+     */
+    static float spring(float t, float zeta, float w) {
+        if (t <= 0f) return 0f;
+        double wd = w * Math.sqrt(1 - zeta * zeta);
+        return (float) (1 - Math.exp(-zeta * w * t) * (Math.cos(wd * t) + zeta * w / wd * Math.sin(wd * t)));
+    }
+
     static int dp(Context c, float v) {
         return Math.round(v * c.getResources().getDisplayMetrics().density);
     }
@@ -87,7 +99,7 @@ final class Glass {
     }
 
     /** A glass panel: vertical gradient fill and one soft rim, bright at the top. Corners are 20% rounder than asked, like Lumora. */
-    static Drawable panel(Context c, int radiusDp, int fill) {
+    static Panel panel(Context c, int radiusDp, int fill) {
         return new Panel(fill, dp(c, radiusDp) * 1.2f, c.getResources().getDisplayMetrics().density);
     }
 
@@ -115,10 +127,37 @@ final class Glass {
         b.setTextSize(15);
         b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         b.setMinWidth(0);
-        b.setMinHeight(dp(c, 52));
-        b.setPadding(dp(c, 18), 0, dp(c, 18), 0);
+        b.setMinHeight(dp(c, 48));
+        b.setPadding(dp(c, 16), 0, dp(c, 16), 0);
         b.setBackground(panel(c, 14, fill));
         return b;
+    }
+
+    /** A wide glass button with an icon and a label, such as the start/stop button. Restyle it with {@link #setAction}. */
+    static LinearLayout action(Context c, int icon, String label, int fill, int ink) {
+        LinearLayout b = new LinearLayout(c);
+        b.setGravity(Gravity.CENTER);
+        b.setClickable(true);
+        b.setMinimumHeight(dp(c, 58));
+        b.setPadding(dp(c, 18), 0, dp(c, 18), 0);
+        IconView glyph = new IconView(c, icon);
+        b.addView(glyph, new LinearLayout.LayoutParams(dp(c, 22), dp(c, 22)));
+        TextView t = text(c, label, 16, ink, true);
+        LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(-2, -2);
+        tp.leftMargin = dp(c, 10);
+        b.addView(t, tp);
+        setAction(b, icon, label, fill, ink);
+        Motion.touchable(b);
+        return b;
+    }
+
+    static void setAction(LinearLayout b, int icon, String label, int fill, int ink) {
+        ((IconView) b.getChildAt(0)).setKind(icon);
+        ((IconView) b.getChildAt(0)).setTint(ink);
+        TextView t = (TextView) b.getChildAt(1);
+        t.setText(label);
+        t.setTextColor(ink);
+        b.setBackground(panel(b.getContext(), 18, fill));
     }
 
     /** Small rounded label. {@code on} gives the orange tint, otherwise a quiet grey one. */
@@ -136,24 +175,16 @@ final class Glass {
         t.setBackground(panel(t.getContext(), 10, on ? ACCENT_SOFT : FILL_STRONG));
     }
 
-    /** Presses in slightly while a finger is down. It never consumes the touch, so clicks and scrolling still work. */
-    static void pressable(View v) {
-        v.setOnTouchListener((view, event) -> {
-            int action = event.getActionMasked();
-            if (action == MotionEvent.ACTION_DOWN) {
-                view.animate().scaleX(0.97f).scaleY(0.97f).setDuration(90).start();
-            } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
-                view.animate().scaleX(1f).scaleY(1f).setDuration(160).start();
-            }
-            return false;
-        });
+    /** Receives the system bar and display cutout sizes in pixels. */
+    interface InsetListener {
+        void onInsets(int left, int top, int right, int bottom);
     }
 
     /**
      * Pads the page by the status bar, navigation bar and display cutout, so content in landscape
      * never hides behind a side bar or a camera notch. Content still scrolls under the bars.
      */
-    static void fitSystemBars(ScrollView page) {
+    static void fitSystemBars(ScrollView page, InsetListener listener) {
         page.setClipToPadding(false);
         page.setOnApplyWindowInsetsListener((view, insets) -> {
             int left, top, right, bottom;
@@ -168,6 +199,7 @@ final class Glass {
                 bottom = insets.getSystemWindowInsetBottom();
             }
             view.setPadding(left, top, right, bottom);
+            if (listener != null) listener.onInsets(left, top, right, bottom);
             return insets;
         });
         page.requestApplyInsets();
@@ -202,7 +234,7 @@ final class Glass {
             setAllCaps(false);
             setStateListAnimator(null);
             setElevation(0f);
-            pressable(this);
+            Motion.touchable(this);
         }
 
         @Override public void setEnabled(boolean enabled) {
@@ -211,19 +243,33 @@ final class Glass {
         }
     }
 
-    private static final class Panel extends Drawable {
+    /** The glass drawable: gradient fill, soft rim, and a light that follows the finger while it is pressed. */
+    static final class Panel extends Drawable {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF rect = new RectF();
+        private final Path clip = new Path();
         private final int fill;
-        private final float radius, density;
+        private float radius;
+        private final float density;
         private Shader fillShader, rimShader;
         private float shaderTop = Float.NaN, shaderHeight = -1f;
         private int layerAlpha = 255;
+        private float touchX = -1f, touchY = -1f, touchAlpha = 0f;
 
         Panel(int fill, float radius, float density) {
             this.fill = fill;
             this.radius = radius;
             this.density = density;
+        }
+
+        float getRadius() { return radius; }
+        void setRadius(float r) { radius = r; invalidateSelf(); }
+        float getTouchAlpha() { return touchAlpha; }
+        void setTouchAlpha(float a) { touchAlpha = a; invalidateSelf(); }
+
+        void touch(float x, float y, float alpha) {
+            touchX = x; touchY = y; touchAlpha = alpha;
+            invalidateSelf();
         }
 
         @Override public void draw(Canvas canvas) {
@@ -245,6 +291,17 @@ final class Glass {
             paint.setShader(fillShader);
             paint.setAlpha(layerAlpha);
             canvas.drawRoundRect(rect, r, r, paint);
+            if (touchAlpha > 0.01f && touchX >= 0f) {
+                canvas.save();
+                clip.reset();
+                clip.addRoundRect(rect, r, r, Path.Direction.CW);
+                canvas.clipPath(clip);
+                float glow = 110f * density;
+                paint.setShader(new RadialGradient(touchX, touchY, glow,
+                        ((int) (70 * touchAlpha) << 24) | 0xffd6aa, 0x00000000, Shader.TileMode.CLAMP));
+                canvas.drawCircle(touchX, touchY, glow, paint);
+                canvas.restore();
+            }
             float stroke = density * 0.9f;
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(stroke);

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The HanSub mark: a speech bubble, two subtitle lines and a spark. Same shapes as LogoView. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M38,36 L70,36 Q78,36 78,44 L78,60 Q78,68 70,68 L50,68 L38,78 L38,68 Q30,68 30,60 L30,44 Q30,36 38,36 Z"
+        android:strokeColor="#F5F5F4"
+        android:strokeWidth="3.4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M39,47 L69,47 M39,57 L59,57"
+        android:strokeColor="#FF9F45"
+        android:strokeWidth="3.4"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M77,23 Q77.8,28.2 83,29 Q77.8,29.8 77,35 Q76.2,29.8 71,29 Q76.2,28.2 77,23 Z"
+        android:fillColor="#FF9F45" />
+</vector>
