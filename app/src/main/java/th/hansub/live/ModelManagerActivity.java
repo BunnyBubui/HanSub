@@ -36,7 +36,7 @@ public class ModelManagerActivity extends Activity {
     private final Map<String,Button> packButtons=new HashMap<>();
     private final Set<String> installed=new HashSet<>();
     private LinearLayout root;
-    private TextView feedback;
+    private TextView feedback, benchmarkOutput;
     private Button fastButton, pivotButton, defaultSpeechButton, offlineSpeechButton;
     private SpeechRecognizer speechDownloader;
 
@@ -85,6 +85,27 @@ public class ModelManagerActivity extends Activity {
         gap(8);
         label("Fast เรียกแปลหนึ่งขั้นตอนจึงเหมาะกับซับสดมากกว่า\n"
                 +"Pivot แปลสองขั้นตอน อาจช้ากว่าและไม่ได้รับประกันว่าแม่นยำขึ้น",12,MUTED,false);
+        gap(12);
+        Button benchmarkButton=button("ทดสอบ Fast เทียบ Pivot บนเครื่องนี้",0xff353d4a,Color.WHITE);
+        benchmarkOutput=label("ใช้ประโยคบทสนทนาเดียวกัน เพื่อดูเวลาตอบสนองและผลแปลทั้ง 2 โหมด",12,MUTED,false);
+        benchmarkButton.setOnClickListener(v->{
+            if (getSharedPreferences("hansub",MODE_PRIVATE).getBoolean("running",false)) {
+                benchmarkOutput.setText("โปรดหยุดการแปลก่อนทดสอบ");
+                return;
+            }
+            if (!(installed.contains("zh") && installed.contains("en") && installed.contains("th"))) {
+                benchmarkOutput.setText("ต้องดาวน์โหลดโมเดลจีน ไทย และอังกฤษก่อนทดสอบ");
+                return;
+            }
+            benchmarkButton.setEnabled(false);
+            benchmarkOutput.setText("กำลังแปลทดสอบด้วยโมเดลทั้งสองแบบ…");
+            TranslationBenchmarker.run(report->{
+                benchmarkOutput.setText(report);
+                benchmarkButton.setEnabled(true);
+            });
+        });
+        root.addView(benchmarkButton);
+        gap(9);
         gap(18);
 
         label("โมเดลรู้จำเสียงจีน",18,Color.WHITE,true);
