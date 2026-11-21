@@ -6,6 +6,7 @@ Native Android app for near-real-time Mandarin speech recognition, Thai translat
 - **Fast (recommended):** Android SpeechRecognizer (zh-CN) → on-device Google ML Kit Translation (zh → th).
 - **Pivot (experimental):** Chinese → English → Thai in two explicit ML Kit translation stages. Slower and **not guaranteed to be more accurate**. ML Kit itself may pivot via English for non-English pairs.
 - **Model Manager:** list/download/delete real ML Kit language packs (Chinese, Thai, optional English); select translation mode.
+- **In-app comparison:** run a one-sentence Fast/Pivot latency and sample-output test on the phone (not a rigorous accuracy benchmark).
 - **Speech mode:** default recognition or device-local Chinese recognizer on Android 12+ (when available); request its system speech pack on Android 13+ (when supported).
 - Persistent foreground microphone service and movable Chinese/Thai overlay captions.
 - No built-in third-party cloud API or API keys.
