@@ -51,7 +51,7 @@ public class LiveTranslateService extends Service implements RecognitionListener
     private Translator direct, chineseEnglish, englishThai;
     private String mode=ModelCatalog.FAST;
     private boolean running,modelsReady;
-    private int generation,retries;
+    private int generation,retries,cloudAppliedTicket=-1;
     private long lastPartialAt;
     private String lastPartial="";
     private final DialogueContext dialogue=new DialogueContext(6);
@@ -221,15 +221,16 @@ public class LiveTranslateService extends Service implements RecognitionListener
         caption(chinese,"กำลังแปล…");
         if (finalResult && ModelCatalog.isCloud(mode) && contextual!=null
                 && remoteUrl.startsWith("https://") && !clientToken.trim().isEmpty()) {
+            // Optimistic fast caption while the contextual model works online.
+            translateOffline(ticket,chinese,startedAt,true,ModelCatalog.FAST);
             contextual.translate(remoteUrl,clientToken,mode,chinese,previous,dialogue.glossary(),
                 (thai,error)->{
                     if (!running || ticket!=generation) return;
                     if (thai!=null && !thai.trim().isEmpty()) {
+                        cloudAppliedTicket=ticket;
                         display(ticket,chinese,thai,mode,startedAt,true);
-                    } else {
-                        // Never leave a subtitle blank due to cloud failure.
-                        translateOffline(ticket,chinese,startedAt,true,ModelCatalog.FAST);
                     }
+                    // On failure keep the already displayed ML Kit subtitle.
                 });
             return;
         }
@@ -259,6 +260,7 @@ public class LiveTranslateService extends Service implements RecognitionListener
     private void display(int ticket,String chinese,String thai,String effectiveMode,
                          long startedAt,boolean finalResult) {
         if (!running || ticket!=generation) return;
+        if (cloudAppliedTicket==ticket && ModelCatalog.FAST.equals(effectiveMode)) return;
         caption(chinese,thai);
         if (finalResult) {
             TranslationStats.record(this,effectiveMode,SystemClock.elapsedRealtime()-startedAt);
