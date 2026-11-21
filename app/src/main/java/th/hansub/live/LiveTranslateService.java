@@ -54,6 +54,9 @@ public class LiveTranslateService extends Service implements RecognitionListener
     private int generation,retries;
     private long lastPartialAt;
     private String lastPartial="";
+    private final DialogueContext dialogue=new DialogueContext(6);
+    private RemoteContextTranslator contextual;
+    private String remoteUrl="", clientToken="";
     private WindowManager windows;
     private LinearLayout overlay;
     private TextView zhView,thView;
@@ -85,6 +88,10 @@ public class LiveTranslateService extends Service implements RecognitionListener
         if (overlay==null) {stopSelf();return START_NOT_STICKY;}
         mode=ModelCatalog.normalizeMode(
                 getSharedPreferences("hansub",MODE_PRIVATE).getString("translation_mode",ModelCatalog.FAST));
+        dialogue.parseNames(getSharedPreferences("hansub",MODE_PRIVATE).getString("character_names",""));
+        remoteUrl=getSharedPreferences("hansub",MODE_PRIVATE).getString("proxy_url","");
+        clientToken=getSharedPreferences("hansub",MODE_PRIVATE).getString("proxy_token","");
+        if (ModelCatalog.isCloud(mode)) contextual=new RemoteContextTranslator();
         caption("中文 → ไทย","กำลังเตรียมโมเดล…");
         prepareTranslation();
         return START_NOT_STICKY;
@@ -139,7 +146,8 @@ public class LiveTranslateService extends Service implements RecognitionListener
         if (!running) return;
         modelsReady=true;
         caption("中文 → ไทย",ModelCatalog.PIVOT.equals(mode)
-                ?"กำลังฟัง (โหมด Pivot)…":"กำลังฟัง (โหมด Fast)…");
+                ?"กำลังฟัง (โหมด Pivot)…":ModelCatalog.isCloud(mode)
+                ?"กำลังฟัง (Cloud + ML Kit fallback)…":"กำลังฟัง (โหมด Fast)…");
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             failure("ไม่พบบริการรู้จำเสียงในอุปกรณ์");return;
         }
@@ -197,35 +205,64 @@ public class LiveTranslateService extends Service implements RecognitionListener
             if (chinese.equals(lastPartial) || now-lastPartialAt<750) return;
             lastPartial=chinese;
             lastPartialAt=now;
-        } else if (chinese.equals(lastPartial)) {
-            // The partial result was already shown; avoid repeating exactly the same translation.
-            return;
+            translate(chinese,false,null);
+        } else {
+            // Always process final results, even when identical to the last partial.
+            java.util.List<String> previous=dialogue.previous();
+            dialogue.record(chinese);
+            translate(chinese,true,previous);
         }
-        translate(chinese);
     }
 
-    private void translate(String chinese) {
+    private void translate(String chinese,boolean finalResult,java.util.List<String> previous) {
         if (!running) return;
         final int ticket=++generation;
+        final long startedAt=SystemClock.elapsedRealtime();
         caption(chinese,"กำลังแปล…");
-        if (ModelCatalog.PIVOT.equals(mode)) {
+        if (finalResult && ModelCatalog.isCloud(mode) && contextual!=null
+                && remoteUrl.startsWith("https://") && !clientToken.trim().isEmpty()) {
+            contextual.translate(remoteUrl,clientToken,mode,chinese,previous,dialogue.glossary(),
+                (thai,error)->{
+                    if (!running || ticket!=generation) return;
+                    if (thai!=null && !thai.trim().isEmpty()) {
+                        display(ticket,chinese,thai,mode,startedAt,true);
+                    } else {
+                        // Never leave a subtitle blank due to cloud failure.
+                        translateOffline(ticket,chinese,startedAt,true,ModelCatalog.FAST);
+                    }
+                });
+            return;
+        }
+        String localMode=ModelCatalog.PIVOT.equals(mode)?ModelCatalog.PIVOT:ModelCatalog.FAST;
+        translateOffline(ticket,chinese,startedAt,finalResult,localMode);
+    }
+
+    private void translateOffline(int ticket,String chinese,long startedAt,
+                                  boolean finalResult,String localMode) {
+        if (!running || ticket!=generation) return;
+        if (ModelCatalog.PIVOT.equals(localMode)) {
             if (chineseEnglish==null || englishThai==null) return;
             chineseEnglish.translate(chinese)
                 .addOnSuccessListener(english->{
                     if (!running || ticket!=generation) return;
                     englishThai.translate(english)
-                        .addOnSuccessListener(thai->showTranslation(ticket,chinese,thai))
+                        .addOnSuccessListener(thai->display(ticket,chinese,thai,localMode,startedAt,finalResult))
                         .addOnFailureListener(e->translationFailed(ticket,chinese));
                 }).addOnFailureListener(e->translationFailed(ticket,chinese));
         } else if (direct!=null) {
             direct.translate(chinese)
-                .addOnSuccessListener(thai->showTranslation(ticket,chinese,thai))
+                .addOnSuccessListener(thai->display(ticket,chinese,thai,localMode,startedAt,finalResult))
                 .addOnFailureListener(e->translationFailed(ticket,chinese));
         }
     }
 
-    private void showTranslation(int ticket,String chinese,String thai) {
-        if (running && ticket==generation) caption(chinese,thai);
+    private void display(int ticket,String chinese,String thai,String effectiveMode,
+                         long startedAt,boolean finalResult) {
+        if (!running || ticket!=generation) return;
+        caption(chinese,thai);
+        if (finalResult) {
+            TranslationStats.record(this,effectiveMode,SystemClock.elapsedRealtime()-startedAt);
+        }
     }
 
     private void translationFailed(int ticket,String chinese) {
@@ -355,6 +392,7 @@ public class LiveTranslateService extends Service implements RecognitionListener
         if (direct!=null) {direct.close();direct=null;}
         if (chineseEnglish!=null) {chineseEnglish.close();chineseEnglish=null;}
         if (englishThai!=null) {englishThai.close();englishThai=null;}
+        if (contextual!=null) {contextual.close();contextual=null;}
         if (windows!=null && overlay!=null) {
             try {windows.removeViewImmediate(overlay);}catch (RuntimeException ignored) {}
         }
