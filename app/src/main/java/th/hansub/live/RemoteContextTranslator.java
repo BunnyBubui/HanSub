@@ -33,7 +33,7 @@ public final class RemoteContextTranslator {
     public void translate(String endpoint,String clientToken,String mode,String chinese,
                           List<String> history, Map<String,String> names, Callback callback) {
         if (endpoint==null || !endpoint.startsWith("https://") || clientToken==null ||
-                clientToken.isBlank()) {
+                clientToken.trim().isEmpty()) {
             main.post(()->callback.completed(null,"Cloud backend is not configured"));
             return;
         }
@@ -45,6 +45,7 @@ public final class RemoteContextTranslator {
                     throw new IllegalArgumentException("Invalid HTTPS endpoint");
                 connection=(HttpsURLConnection)url.openConnection();
                 connection.setRequestMethod("POST");
+                connection.setInstanceFollowRedirects(false);
                 connection.setConnectTimeout(1800);
                 connection.setReadTimeout(4200);
                 connection.setDoOutput(true);
