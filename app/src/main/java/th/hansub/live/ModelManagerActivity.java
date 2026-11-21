@@ -139,7 +139,7 @@ public class ModelManagerActivity extends Activity {
         gap(9);
         label("ชื่อจีน=ชื่อไทย (หนึ่งชื่อต่อบรรทัด)",13,Color.WHITE,true);
         gap(6);
-        EditText names=field("张总=ประธานจาง\\n小雨=เสี่ยวอวี่",false);
+        EditText names=field("张总=ประธานจาง\n小雨=เสี่ยวอวี่",false);
         names.setSingleLine(false);
         names.setMinLines(3);
         names.setText(getSharedPreferences("hansub",MODE_PRIVATE).getString("character_names",""));
@@ -263,9 +263,9 @@ public class ModelManagerActivity extends Activity {
     private void showPerformance() {
         if (performance==null) return;
         performance.setText(
-                "Fast (ML Kit) • "+TranslationStats.summary(this,ModelCatalog.FAST)+"\\n"
-                +"Pivot • "+TranslationStats.summary(this,ModelCatalog.PIVOT)+"\\n"
-                +"Cloud Lite • "+TranslationStats.summary(this,ModelCatalog.CLOUD_FAST)+"\\n"
+                "Fast (ML Kit) • "+TranslationStats.summary(this,ModelCatalog.FAST)+"\n"
+                +"Pivot • "+TranslationStats.summary(this,ModelCatalog.PIVOT)+"\n"
+                +"Cloud Lite • "+TranslationStats.summary(this,ModelCatalog.CLOUD_FAST)+"\n"
                 +"Cloud Quality • "+TranslationStats.summary(this,ModelCatalog.CLOUD_QUALITY));
     }
 
