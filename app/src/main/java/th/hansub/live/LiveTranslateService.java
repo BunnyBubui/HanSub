@@ -61,6 +61,10 @@ public class LiveTranslateService extends Service implements RecognitionListener
     private MediaProjection projection;
     private MediaProjection.Callback projectionCallback;
     private boolean silenceHinted;
+    /** On-device Chinese speech to text (SenseVoice). Null when the system recognizer is used instead. */
+    private LocalAsr localAsr;
+    private TextView statsView;
+    private volatile long lastTranslateMs;
     private Translator direct, chineseEnglish, englishThai;
     private String mode=ModelCatalog.FAST;
     private boolean running,modelsReady;
@@ -179,6 +183,13 @@ public class LiveTranslateService extends Service implements RecognitionListener
         caption("中文 → ไทย",ModelCatalog.PIVOT.equals(mode)
                 ?"กำลังฟัง (โหมด Pivot)…":ModelCatalog.isCloud(mode)
                 ?"กำลังฟัง (Cloud + ML Kit fallback)…":"กำลังฟัง (โหมด Fast)…");
+        if ("local".equals(getSharedPreferences("hansub",MODE_PRIVATE).getString("asr_engine","local"))) {
+            if (LocalModels.ready(this)) {
+                startLocalEngine();
+                return;
+            }
+            caption("中文 → ไทย","ยังไม่ได้ดาวน์โหลดโมเดลถอดเสียงในเครื่อง ใช้ระบบ Android ชั่วคราว");
+        }
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             failure("ไม่พบบริการรู้จำเสียงในอุปกรณ์");return;
         }
@@ -228,24 +239,98 @@ public class LiveTranslateService extends Service implements RecognitionListener
         return i;
     }
 
-    /** Opens our own microphone capture when the phone is Android 13+ and the setting is on. */
-    private void openOwnMic() {
-        if (Build.VERSION.SDK_INT<33) return;
+    /**
+     * Loads SenseVoice and Silero VAD on a background thread, then opens our own capture and feeds it in.
+     * Nothing here touches Android's speech service, so there is no audio focus and no restarts.
+     */
+    private void startLocalEngine() {
+        caption("中文 → ไทย","กำลังโหลดโมเดลถอดเสียงในเครื่อง…");
+        new Thread(()->{
+            LocalAsr asr;
+            try {
+                asr=new LocalAsr(this,new LocalAsr.Listener() {
+                    @Override public void onPartial(String chinese) {main.post(()->heard(chinese,false));}
+                    @Override public void onFinal(String chinese,long decodeMs) {main.post(()->heard(chinese,true));}
+                });
+            } catch (Throwable error) {
+                main.post(()->failure("โหลดโมเดลถอดเสียงไม่ได้: "+error.getClass().getSimpleName()
+                        +" ลองลบแล้วดาวน์โหลดใหม่ใน Model Manager"));
+                return;
+            }
+            main.post(()->{
+                if (!running) {asr.stop();return;}
+                localAsr=asr;
+                if (!openCapture()) {failure("เปิดไมค์หรือจับเสียงไม่ได้");return;}
+                feeder.setListener(asr);
+                asr.start();
+                caption("中文 → ไทย",feeder.isPlayback()
+                        ?"กำลังฟังเสียงจากแอปที่เล่นอยู่…":"กำลังฟังจากไมค์ (เปิดลำโพงไว้)…");
+                startStats();
+            });
+        },"hansub-asr-load").start();
+    }
+
+    /** Text from the on-device recognizer. The Chinese line shows at once; translation is paced. */
+    private void heard(String chinese,boolean finalResult) {
+        if (!running || !modelsReady) return;
+        long now=SystemClock.elapsedRealtime();
+        if (!finalResult) {
+            captionZh(chinese);
+            if (now-lastPartialAt<600) return;
+            lastPartialAt=now;
+            translate(chinese,false,null);
+        } else {
+            lastPartialAt=0;
+            java.util.List<String> previous=dialogue.previous();
+            dialogue.record(chinese);
+            translate(chinese,true,previous);
+        }
+    }
+
+    /** A thin line under the subtitle: input level, decode and translate time, and how far behind we are. */
+    private void startStats() {
+        if (statsView==null || !getSharedPreferences("hansub",MODE_PRIVATE).getBoolean("show_stats",true)) return;
+        statsView.setVisibility(View.VISIBLE);
+        main.post(new Runnable() {
+            @Override public void run() {
+                LocalAsr asr=localAsr;
+                if (!running || asr==null || statsView==null) return;
+                int bars=Math.round((float)Math.sqrt(asr.level)*5f);
+                StringBuilder meter=new StringBuilder();
+                for (int i=0;i<5;i++) meter.append(i<bars?'\u25AE':'\u25AF');
+                String behind=asr.backlog>1?String.format(java.util.Locale.US," · ค้าง %.1fs",asr.backlog*0.2f):"";
+                statsView.setText("เสียง "+meter+" · ถอด "+asr.lastDecodeMs+"ms · แปล "+lastTranslateMs+"ms"+behind);
+                main.postDelayed(this,500);
+            }
+        });
+    }
+
+    /** Opens our own capture: other apps' sound if consent was given, otherwise the microphone. */
+    private boolean openCapture() {
         if (projection!=null) {
             MicFeeder candidate=new MicFeeder();
             if (candidate.startPlayback(projection)) {
                 feeder=candidate;
                 watchSilence();
-                return;
+                return true;
             }
             releaseProjection();
             caption("MIC","จับเสียงจากแอปอื่นไม่ได้ ใช้ไมค์แทน");
         }
-        String path=getSharedPreferences("hansub",MODE_PRIVATE).getString("audio_path","own");
-        if (!"own".equals(path) && !"playback".equals(path)) return;
         MicFeeder candidate=new MicFeeder();
-        if (candidate.startMic()) feeder=candidate;
-        else caption("MIC","เปิดไมค์เองไม่ได้ ใช้ไมค์ระบบแทน (วิดีโออาจหยุดชั่วคราว)");
+        if (candidate.startMic()) {
+            feeder=candidate;
+            return true;
+        }
+        return false;
+    }
+
+    /** System recognizer path: feeds it our capture through a pipe on Android 13+, unless set to "system". */
+    private void openOwnMic() {
+        if (Build.VERSION.SDK_INT<33) return;
+        String path=getSharedPreferences("hansub",MODE_PRIVATE).getString("audio_path","own");
+        if ("system".equals(path) && projection==null) return;
+        if (!openCapture()) caption("MIC","เปิดไมค์เองไม่ได้ ใช้ไมค์ระบบแทน (วิดีโออาจหยุดชั่วคราว)");
     }
 
     /** Takes the screen-capture consent the person gave in the app and keeps it while we listen. */
@@ -355,7 +440,8 @@ public class LiveTranslateService extends Service implements RecognitionListener
         if (!running) return;
         final int ticket=++generation;
         final long startedAt=SystemClock.elapsedRealtime();
-        caption(chinese,"กำลังแปล…");
+        // Show the Chinese now and keep the last Thai line until the new one is ready: no blank flash.
+        captionZh(chinese);
         if (finalResult && ModelCatalog.isCloud(mode) && contextual!=null
                 && remoteUrl.startsWith("https://") && !clientToken.trim().isEmpty()) {
             // Optimistic fast caption while the contextual model works online.
@@ -398,7 +484,8 @@ public class LiveTranslateService extends Service implements RecognitionListener
                          long startedAt,boolean finalResult) {
         if (!running || ticket!=generation) return;
         if (cloudAppliedTicket==ticket && ModelCatalog.FAST.equals(effectiveMode)) return;
-        caption(chinese,thai);
+        lastTranslateMs=SystemClock.elapsedRealtime()-startedAt;
+        captionTh(thai);
         if (finalResult) {
             TranslationStats.record(this,effectiveMode,SystemClock.elapsedRealtime()-startedAt);
         }
@@ -493,6 +580,15 @@ public class LiveTranslateService extends Service implements RecognitionListener
             LinearLayout.LayoutParams thaiParams=new LinearLayout.LayoutParams(-1,-2);
             thaiParams.topMargin=dp(2);
             overlay.addView(thView,thaiParams);
+            statsView=new TextView(this);
+            statsView.setGravity(Gravity.CENTER);
+            statsView.setTextSize(10);
+            statsView.setTextColor(0x99FFFFFF);
+            statsView.setSingleLine(true);
+            statsView.setVisibility(View.GONE);
+            LinearLayout.LayoutParams statsParams=new LinearLayout.LayoutParams(-1,-2);
+            statsParams.topMargin=dp(4);
+            overlay.addView(statsView,statsParams);
             applyTextSizes();
             Configuration config=getResources().getConfiguration();
             params=new WindowManager.LayoutParams(
@@ -600,6 +696,23 @@ public class LiveTranslateService extends Service implements RecognitionListener
         }
     }
 
+    private void captionZh(String chinese) {
+        main.post(()->{if (zhView!=null && running) zhView.setText(chinese);});
+    }
+
+    private void captionTh(String thai) {
+        main.post(()->{
+            if (thView==null || !running) return;
+            boolean changed=!thai.contentEquals(thView.getText());
+            thView.setText(thai);
+            if (changed && !Motion.reduced(this)) {
+                thView.setAlpha(0.35f);
+                thView.setTranslationY(dp(4));
+                thView.animate().alpha(1f).translationY(0f).setDuration(180).setInterpolator(Motion.SOFT).start();
+            }
+        });
+    }
+
     private void caption(String chinese,String thai) {
         main.post(()->{
             if (zhView!=null && thView!=null && running) {
@@ -626,7 +739,8 @@ public class LiveTranslateService extends Service implements RecognitionListener
         getSharedPreferences("hansub",MODE_PRIVATE).edit().putBoolean("running",false).apply();
         main.removeCallbacksAndMessages(null);
         if (recognizer!=null) {recognizer.cancel();recognizer.destroy();recognizer=null;}
-        if (feeder!=null) {feeder.stop();feeder=null;}
+        if (feeder!=null) {feeder.setListener(null);feeder.stop();feeder=null;}
+        if (localAsr!=null) {localAsr.stop();localAsr=null;}
         releaseProjection();
         closeSessionSound();
         if (direct!=null) {direct.close();direct=null;}

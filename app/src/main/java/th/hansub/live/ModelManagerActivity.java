@@ -47,7 +47,9 @@ public class ModelManagerActivity extends Activity {
     private FrameLayout host;
     private TextView benchmarkOutput, performance;
     private Notice notice;
-    private Option fastOption, pivotOption, cloudFastOption, cloudQualityOption, defaultSpeech, offlineSpeech, ownMicOption, systemMicOption, playbackOption;
+    private Option fastOption, pivotOption, cloudFastOption, cloudQualityOption, defaultSpeech, offlineSpeech, ownMicOption, systemMicOption, playbackOption, localEngineOption, systemEngineOption;
+    private TextView localStatus;
+    private Glass.Btn localButton;
     private SpeechRecognizer speechDownloader;
 
     @Override public void onCreate(Bundle state) {
@@ -71,6 +73,7 @@ public class ModelManagerActivity extends Activity {
         buildModes();
         buildPerformance();
         buildCloud();
+        buildLocalEngine();
         buildAudioPath();
         buildSpeech();
         TextView credit=Glass.text(this,"Powered by Google Translate",12,Glass.TEXT3,false);
@@ -197,22 +200,79 @@ public class ModelManagerActivity extends Activity {
             +"และห้ามใส่ Gemini API key ในแอป",12,Glass.TEXT3,false),10);
     }
 
+    private void buildLocalEngine() {
+        LinearLayout card=section("ตัวถอดเสียงจีน",
+                "SenseVoice ทำงานในเครื่อง ไม่ใช้เน็ต ฟังต่อเนื่องไม่มีช่วงหลุด และไม่ทำให้วิดีโอหยุด");
+        localEngineOption=option(card,"SenseVoice ในเครื่อง • แนะนำ","ต้องดาวน์โหลดโมเดลครั้งเดียว ประมาณ 230 MB");
+        localEngineOption.setOnClickListener(v->selectEngine("local"));
+        systemEngineOption=option(card,"ตัวรู้จำเสียงของ Android • แบบเดิม","ใช้เมื่อยังไม่มีโมเดล หรือเครื่องช้ามาก");
+        systemEngineOption.setOnClickListener(v->selectEngine("system"));
+        localStatus=Glass.text(this,"",13,Glass.TEXT2,false);
+        add(card,localStatus,14);
+        localButton=Glass.button(this,"",Glass.ACCENT,Glass.ON_ACCENT);
+        localButton.setOnClickListener(v->onLocalButton());
+        add(card,localButton,10);
+        refreshLocal();
+    }
+
+    private void selectEngine(String engine) {
+        getSharedPreferences("hansub",MODE_PRIVATE).edit().putString("asr_engine",engine).apply();
+        updateSelections(true);
+        if ("local".equals(engine) && !LocalModels.ready(this)) notice("กดดาวน์โหลดโมเดลด้านล่างก่อนใช้งาน");
+        else notice("มีผลเมื่อเริ่มแปลครั้งถัดไป");
+    }
+
+    private void onLocalButton() {
+        if (LocalModels.state==LocalModels.RUNNING) {
+            LocalModels.cancel();
+        } else if (LocalModels.ready(this)) {
+            LocalModels.delete(this);
+            notice("ลบโมเดลถอดเสียงแล้ว");
+        } else {
+            LocalModels.download(this);
+            notice("เริ่มดาวน์โหลด แนะนำให้ใช้ Wi-Fi");
+        }
+        refreshLocal();
+    }
+
+    /** Shows download progress; while a download runs, checks again every half second. */
+    private void refreshLocal() {
+        if (localStatus==null) return;
+        int st=LocalModels.state;
+        if (st==LocalModels.RUNNING) {
+            long done=LocalModels.doneBytes/1048576, total=LocalModels.totalBytes/1048576;
+            localStatus.setText(total>0?"กำลังดาวน์โหลด "+done+" / "+total+" MB (ไฟล์ปัจจุบัน)":"กำลังดาวน์โหลด "+done+" MB…");
+            Glass.setButton(localButton,"ยกเลิก",Glass.FILL_STRONG,Glass.TEXT);
+            handler.postDelayed(this::refreshLocal,500);
+            return;
+        }
+        if (LocalModels.ready(this)) {
+            localStatus.setText(LocalModels.NAME+" พร้อมใช้ • "+(LocalModels.sizeOnDisk(this)/1048576)+" MB");
+            Glass.setButton(localButton,"ลบโมเดล",Glass.FILL_STRONG,Glass.TEXT);
+        } else {
+            localStatus.setText(st==LocalModels.FAILED?"ดาวน์โหลดไม่สำเร็จ: "+LocalModels.error+" กดเพื่อทำต่อจากเดิม"
+                    :"ยังไม่ได้ดาวน์โหลด");
+            Glass.setButton(localButton,st==LocalModels.FAILED?"ดาวน์โหลดต่อ":"ดาวน์โหลดโมเดล (~230 MB)",
+                    Glass.ACCENT,Glass.ON_ACCENT);
+        }
+    }
+
     private void buildAudioPath() {
         LinearLayout card=section("แหล่งเสียงที่ส่งให้ตัวรู้จำเสียง",
                 "ใส่หูฟังอยู่ให้เลือกแบบแรก ส่วนแบบที่สองใช้ไมค์ฟังเสียงจากลำโพง และทั้งสองแบบไม่ทำให้วิดีโอหยุด");
         playbackOption=option(card,"จับเสียงจากแอปที่เล่นอยู่ • ใช้กับหูฟังได้",
-                "Android 13 ขึ้นไป ระบบจะถามสิทธิ์จับภาพหน้าจอทุกครั้งที่เริ่ม ถ้าถามให้เลือกทั้งหน้าจอ "
+                "Android 10 ขึ้นไป ระบบจะถามสิทธิ์จับภาพหน้าจอทุกครั้งที่เริ่ม ถ้าถามให้เลือกทั้งหน้าจอ "
                 + "แอปบางตัว เช่น Netflix ห้ามดึงเสียง");
         playbackOption.setOnClickListener(v->selectAudioPath("playback"));
-        ownMicOption=option(card,"ไมค์ที่แอปเปิดเอง • วิดีโอไม่หยุด","ต้องเปิดลำโพง Android 13 ขึ้นไป");
+        ownMicOption=option(card,"ไมค์ที่แอปเปิดเอง • วิดีโอไม่หยุด","ต้องเปิดลำโพง ใช้ไม่ได้กับหูฟัง");
         ownMicOption.setOnClickListener(v->selectAudioPath("own"));
         systemMicOption=option(card,"ไมค์ของระบบ Android • แบบเดิม","วิดีโออาจหยุดทุกครั้งที่ฟังประโยคใหม่");
         systemMicOption.setOnClickListener(v->selectAudioPath("system"));
     }
 
     private void selectAudioPath(String path) {
-        if (!"system".equals(path) && Build.VERSION.SDK_INT<33) {
-            notice("แบบนี้ใช้ได้เฉพาะ Android 13 ขึ้นไป");
+        if ("playback".equals(path) && Build.VERSION.SDK_INT<29) {
+            notice("การจับเสียงจากแอปอื่นใช้ได้เฉพาะ Android 10 ขึ้นไป");
             return;
         }
         getSharedPreferences("hansub",MODE_PRIVATE).edit().putString("audio_path",path).apply();
@@ -446,10 +506,13 @@ public class ModelManagerActivity extends Activity {
         defaultSpeech.setOn(!ModelCatalog.isOfflineSpeech(speech),animate);
         offlineSpeech.setOn(ModelCatalog.isOfflineSpeech(speech),animate);
         String path=getSharedPreferences("hansub",MODE_PRIVATE).getString("audio_path","own");
-        boolean newPath=Build.VERSION.SDK_INT>=33;
-        playbackOption.setOn(newPath && "playback".equals(path),animate);
-        ownMicOption.setOn(newPath && "own".equals(path),animate);
-        systemMicOption.setOn(!newPath || "system".equals(path),animate);
+        boolean canPlayback=Build.VERSION.SDK_INT>=29;
+        playbackOption.setOn(canPlayback && "playback".equals(path),animate);
+        ownMicOption.setOn("own".equals(path) || (!canPlayback && "playback".equals(path)),animate);
+        systemMicOption.setOn("system".equals(path),animate);
+        boolean local="local".equals(getSharedPreferences("hansub",MODE_PRIVATE).getString("asr_engine","local"));
+        localEngineOption.setOn(local,animate);
+        systemEngineOption.setOn(!local,animate);
     }
 
     private void downloadSpeech() {

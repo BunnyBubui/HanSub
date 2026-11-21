@@ -8,7 +8,9 @@ android {
         targetSdk 35
         // CI numbers every build, so each new APK has a higher versionCode and installs over the last one.
         versionCode 1000 + (System.getenv('GITHUB_RUN_NUMBER') ?: '0').toInteger()
-        versionName '0.4.0'
+        versionName '0.5.0'
+        // The speech engine ships native code; phones from the last ten years are all ARM.
+        ndk { abiFilters 'arm64-v8a', 'armeabi-v7a' }
     }
     signingConfigs {
         // One fixed key for every build. A debug key that changes per build makes Android refuse to update the app.
@@ -29,5 +31,10 @@ android {
 }
 dependencies {
     implementation 'com.google.mlkit:translate:17.0.3'
+    // sherpa-onnx: on-device speech recognition (SenseVoice) and voice activity detection (Silero VAD).
+    // CI downloads the AAR from the project's GitHub release into app/libs (see android-build.yml).
+    implementation files('libs/sherpa-onnx-2.0.2.aar')
+    // The AAR is written in Kotlin and comes without a POM, so its runtime is added by hand.
+    implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.9.24'
     testImplementation 'junit:junit:4.13.2'
 }

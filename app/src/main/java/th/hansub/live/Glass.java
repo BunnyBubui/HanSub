@@ -133,6 +133,13 @@ final class Glass {
         return b;
     }
 
+    /** Changes a button's label and colours in place. */
+    static void setButton(Btn b, String label, int fill, int textColor) {
+        b.setText(label);
+        b.setTextColor(textColor);
+        b.setBackground(panel(b.getContext(), 14, fill));
+    }
+
     /** A wide glass button with an icon and a label, such as the start/stop button. Restyle it with {@link #setAction}. */
     static LinearLayout action(Context c, int icon, String label, int fill, int ink) {
         LinearLayout b = new LinearLayout(c);

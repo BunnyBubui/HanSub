@@ -27,6 +27,11 @@ import java.io.OutputStream;
  * Between two sessions the last 0.4 s of sound is kept, so the start of the next sentence is not lost.
  */
 final class MicFeeder {
+    /** Receives every chunk of 16 kHz 16-bit mono sound, on the capture thread. */
+    interface AudioListener {
+        void onAudio(byte[] pcm, int bytes);
+    }
+
     static final int RATE = 16000;
     private static final int PLAYBACK_RATE = 48000;
     private static final int PREROLL_BYTES = RATE * 2 * 4 / 10;
@@ -43,6 +48,11 @@ final class MicFeeder {
     private boolean playback;
     private volatile boolean alive;
     private volatile long lastSoundAt;
+    private volatile AudioListener listener;
+
+    void setListener(AudioListener l) {
+        listener = l;
+    }
 
     boolean isPlayback() {
         return playback;
@@ -173,6 +183,8 @@ final class MicFeeder {
                 data = cut;
             }
             if (peak(data, len) > SILENCE_PEAK) lastSoundAt = SystemClock.elapsedRealtime();
+            AudioListener l = listener;
+            if (l != null) l.onAudio(data, len);
             OutputStream out;
             synchronized (lock) {
                 out = sink;
