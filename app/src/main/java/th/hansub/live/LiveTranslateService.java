@@ -10,12 +10,15 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.PixelFormat;
+import android.graphics.drawable.GradientDrawable;
+import android.media.AudioFormat;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.speech.RecognitionListener;
@@ -47,6 +50,10 @@ public class LiveTranslateService extends Service implements RecognitionListener
     private static final int NOTIFICATION_ID=201;
     private final Handler main=new Handler(Looper.getMainLooper());
     private SpeechRecognizer recognizer;
+    /** Own microphone capture, so the recognizer never asks for audio focus and videos keep playing. */
+    private MicFeeder feeder;
+    private ParcelFileDescriptor sessionSound;
+    private int ownMicFailures;
     private Translator direct, chineseEnglish, englishThai;
     private String mode=ModelCatalog.FAST;
     private boolean running,modelsReady;
@@ -62,7 +69,9 @@ public class LiveTranslateService extends Service implements RecognitionListener
     private WindowManager.LayoutParams params;
     private boolean overlayMoved;
     /** Widest the subtitle box gets. On a wide landscape screen it stays centred instead of stretching edge to edge. */
-    private static final int OVERLAY_MAX_DP=640;
+    private static final int OVERLAY_MAX_DP=480;
+    private static final float SCALE_MIN=0.6f, SCALE_MAX=1.6f, SCALE_STEP=0.15f;
+    private float overlayScale=1f;
 
     @Override public IBinder onBind(Intent intent) {return null;}
 
@@ -165,6 +174,7 @@ public class LiveTranslateService extends Service implements RecognitionListener
                 recognizer=SpeechRecognizer.createSpeechRecognizer(this);
             }
             recognizer.setRecognitionListener(this);
+            openOwnMic();
             startListening();
         } catch (RuntimeException error) {
             failure("เปิดระบบเสียงไม่ได้: "+error.getClass().getSimpleName());
@@ -183,7 +193,50 @@ public class LiveTranslateService extends Service implements RecognitionListener
         i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE,"zh-CN");
         i.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS,true);
         i.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS,1);
+        if (feeder!=null && Build.VERSION.SDK_INT>=33) {
+            try {
+                closeSessionSound();
+                sessionSound=feeder.attach();
+                i.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE,sessionSound);
+                i.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT,1);
+                i.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING,AudioFormat.ENCODING_PCM_16BIT);
+                i.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE,MicFeeder.RATE);
+            } catch (java.io.IOException e) {
+                useSystemMic("สร้างช่องเสียงไม่ได้");
+            }
+        }
         return i;
+    }
+
+    /** Opens our own microphone capture when the phone is Android 13+ and the setting is on. */
+    private void openOwnMic() {
+        String path=getSharedPreferences("hansub",MODE_PRIVATE).getString("audio_path","own");
+        if (Build.VERSION.SDK_INT<33 || !"own".equals(path)) return;
+        MicFeeder candidate=new MicFeeder();
+        if (candidate.start()) feeder=candidate;
+        else caption("MIC","เปิดไมค์เองไม่ได้ ใช้ไมค์ระบบแทน (วิดีโออาจหยุดชั่วคราว)");
+    }
+
+    /** Falls back to the system microphone. The old behaviour: works, but videos may pause. */
+    private void useSystemMic(String reason) {
+        if (feeder==null) return;
+        feeder.stop();
+        feeder=null;
+        closeSessionSound();
+        caption("MIC",reason+" ใช้ไมค์ระบบแทน (วิดีโออาจหยุดชั่วคราว)");
+    }
+
+    private void closeSessionSound() {
+        if (sessionSound!=null) {
+            try {sessionSound.close();} catch (java.io.IOException ignored) {}
+            sessionSound=null;
+        }
+    }
+
+    /** Called when one recognizer session ends: closes the pipe so the next session starts clean. */
+    private void endSession() {
+        if (feeder!=null) feeder.detach();
+        closeSessionSound();
     }
 
     private void startListening() {
@@ -278,16 +331,25 @@ public class LiveTranslateService extends Service implements RecognitionListener
     @Override public void onRmsChanged(float rms) {}
     @Override public void onBufferReceived(byte[] buffer) {}
     @Override public void onEndOfSpeech() {}
-    @Override public void onPartialResults(Bundle b) {speech(b,false);}
+    @Override public void onPartialResults(Bundle b) {ownMicFailures=0;speech(b,false);}
     @Override public void onResults(Bundle b) {
+        endSession();
+        ownMicFailures=0;
         speech(b,true);
         lastPartial="";
         retries=0;
         restart(150);
     }
     @Override public void onError(int code) {
+        endSession();
         if (!running) return;
         lastPartial="";
+        if (feeder!=null && (code==SpeechRecognizer.ERROR_CLIENT || code==SpeechRecognizer.ERROR_AUDIO)
+                && ++ownMicFailures>=3) {
+            // The recognizer does not accept our sound. Do not leave the person without translation.
+            ownMicFailures=0;
+            useSystemMic("บริการเสียงไม่รับเสียงจากแอป");
+        }
         if (code==SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
             failure("ไม่มีสิทธิ์ไมโครโฟน");return;
         }
@@ -317,29 +379,39 @@ public class LiveTranslateService extends Service implements RecognitionListener
             overlay=new LinearLayout(this);
             overlay.setOrientation(LinearLayout.VERTICAL);
             overlay.setGravity(Gravity.CENTER);
-            overlay.setPadding(dp(16),dp(11),dp(16),dp(12));
-            overlay.setBackground(Glass.panel(this,16,Glass.FILL_POP));
-            // A small grip on top: the box can be dragged up and down.
+            overlayScale=Math.max(SCALE_MIN,Math.min(SCALE_MAX,
+                    getSharedPreferences("hansub",MODE_PRIVATE).getFloat("overlay_scale",1f)));
+            overlay.setPadding(dp(12),dp(6),dp(12),dp(10));
+            // Plain background: one flat, mostly opaque dark colour. No gradient, no glow.
+            GradientDrawable plain=new GradientDrawable();
+            plain.setColor(0xE0101012);
+            plain.setCornerRadius(dp(12));
+            overlay.setBackground(plain);
+            // Top row: smaller (A-), a grip for dragging, larger (A+).
+            LinearLayout top=new LinearLayout(this);
+            top.setGravity(Gravity.CENTER_VERTICAL);
+            top.addView(sizeButton("A\u2212",-SCALE_STEP));
+            top.addView(new View(this),new LinearLayout.LayoutParams(0,1,1f));
             View grip=new View(this);
-            grip.setBackground(Glass.oval(Glass.alpha(Glass.TEXT,0x40)));
-            LinearLayout.LayoutParams gripParams=new LinearLayout.LayoutParams(dp(34),dp(3));
-            gripParams.bottomMargin=dp(7);
-            overlay.addView(grip,gripParams);
+            grip.setBackground(Glass.oval(0x55FFFFFF));
+            top.addView(grip,new LinearLayout.LayoutParams(dp(34),dp(3)));
+            top.addView(new View(this),new LinearLayout.LayoutParams(0,1,1f));
+            top.addView(sizeButton("A+",SCALE_STEP));
+            overlay.addView(top,new LinearLayout.LayoutParams(-1,-2));
             zhView=new TextView(this);
             zhView.setGravity(Gravity.CENTER);
-            zhView.setTextSize(14);
             zhView.setMaxLines(2);
-            zhView.setTextColor(Glass.ACCENT);
+            zhView.setTextColor(0xFFB4B4B8);
             overlay.addView(zhView,new LinearLayout.LayoutParams(-1,-2));
             thView=new TextView(this);
             thView.setGravity(Gravity.CENTER);
-            thView.setTextSize(20);
             thView.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
             thView.setMaxLines(3);
-            thView.setTextColor(Glass.TEXT);
+            thView.setTextColor(0xFFFFFFFF);
             LinearLayout.LayoutParams thaiParams=new LinearLayout.LayoutParams(-1,-2);
-            thaiParams.topMargin=dp(4);
+            thaiParams.topMargin=dp(2);
             overlay.addView(thView,thaiParams);
+            applyTextSizes();
             Configuration config=getResources().getConfiguration();
             params=new WindowManager.LayoutParams(
                     overlayWidth(config),
@@ -387,7 +459,7 @@ public class LiveTranslateService extends Service implements RecognitionListener
         int widthDp=config.screenWidthDp>0?config.screenWidthDp
                 :Math.round(getResources().getDisplayMetrics().widthPixels
                     /getResources().getDisplayMetrics().density);
-        return dp(Math.max(200,Math.min(widthDp-26,OVERLAY_MAX_DP)));
+        return dp(Math.max(200,Math.min(widthDp-26,Math.round(OVERLAY_MAX_DP*Math.max(1f,overlayScale)))));
     }
 
     private int screenHeightPx(Configuration config) {
@@ -410,6 +482,37 @@ public class LiveTranslateService extends Service implements RecognitionListener
         if (windows!=null && overlay!=null && params!=null) {
             params.width=overlayWidth(config);
             params.y=overlayMoved?clampOverlayY(params.y,config):defaultOverlayY(config);
+            try {windows.updateViewLayout(overlay,params);}
+            catch (RuntimeException ignored) {}
+        }
+    }
+
+    /** Base sizes are small on purpose; the A- / A+ buttons scale both lines together. */
+    private void applyTextSizes() {
+        if (zhView!=null) zhView.setTextSize(11f*overlayScale);
+        if (thView!=null) thView.setTextSize(16f*overlayScale);
+    }
+
+    private TextView sizeButton(String label,float delta) {
+        TextView button=new TextView(this);
+        button.setText(label);
+        button.setTextSize(13);
+        button.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
+        button.setTextColor(0xFFD0D0D4);
+        button.setGravity(Gravity.CENTER);
+        button.setPadding(dp(10),dp(4),dp(10),dp(4));
+        button.setOnClickListener(v->changeScale(delta));
+        return button;
+    }
+
+    private void changeScale(float delta) {
+        float next=Math.max(SCALE_MIN,Math.min(SCALE_MAX,Math.round((overlayScale+delta)*100f)/100f));
+        if (next==overlayScale) return;
+        overlayScale=next;
+        getSharedPreferences("hansub",MODE_PRIVATE).edit().putFloat("overlay_scale",overlayScale).apply();
+        applyTextSizes();
+        if (windows!=null && overlay!=null && params!=null) {
+            params.width=overlayWidth(getResources().getConfiguration());
             try {windows.updateViewLayout(overlay,params);}
             catch (RuntimeException ignored) {}
         }
@@ -441,6 +544,8 @@ public class LiveTranslateService extends Service implements RecognitionListener
         getSharedPreferences("hansub",MODE_PRIVATE).edit().putBoolean("running",false).apply();
         main.removeCallbacksAndMessages(null);
         if (recognizer!=null) {recognizer.cancel();recognizer.destroy();recognizer=null;}
+        if (feeder!=null) {feeder.stop();feeder=null;}
+        closeSessionSound();
         if (direct!=null) {direct.close();direct=null;}
         if (chineseEnglish!=null) {chineseEnglish.close();chineseEnglish=null;}
         if (englishThai!=null) {englishThai.close();englishThai=null;}

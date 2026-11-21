@@ -47,7 +47,7 @@ public class ModelManagerActivity extends Activity {
     private FrameLayout host;
     private TextView benchmarkOutput, performance;
     private Notice notice;
-    private Option fastOption, pivotOption, cloudFastOption, cloudQualityOption, defaultSpeech, offlineSpeech;
+    private Option fastOption, pivotOption, cloudFastOption, cloudQualityOption, defaultSpeech, offlineSpeech, ownMicOption, systemMicOption;
     private SpeechRecognizer speechDownloader;
 
     @Override public void onCreate(Bundle state) {
@@ -71,6 +71,7 @@ public class ModelManagerActivity extends Activity {
         buildModes();
         buildPerformance();
         buildCloud();
+        buildAudioPath();
         buildSpeech();
         TextView credit=Glass.text(this,"Powered by Google Translate",12,Glass.TEXT3,false);
         credit.setGravity(Gravity.CENTER);
@@ -194,6 +195,25 @@ public class ModelManagerActivity extends Activity {
         add(card,Glass.text(this,"โหมด Cloud ต้อง deploy backend และมี Gemini API key ฝั่งเซิร์ฟเวอร์ก่อน "
             +"ข้อความจีนและบริบทจะถูกส่งไปยัง URL ที่ตั้งค่า โปรดใช้เซิร์ฟเวอร์ที่เชื่อถือได้ "
             +"และห้ามใส่ Gemini API key ในแอป",12,Glass.TEXT3,false),10);
+    }
+
+    private void buildAudioPath() {
+        LinearLayout card=section("แหล่งเสียงที่ส่งให้ตัวรู้จำเสียง",
+                "ถ้าเปิดไมค์แล้ววิดีโอหยุดเอง ให้เลือกแบบแรก");
+        ownMicOption=option(card,"แอปรับเสียงเอง • วิดีโอไม่หยุด","ต้อง Android 13 ขึ้นไป");
+        ownMicOption.setOnClickListener(v->selectAudioPath("own"));
+        systemMicOption=option(card,"ไมค์ของระบบ Android • แบบเดิม","วิดีโออาจหยุดทุกครั้งที่ฟังประโยคใหม่");
+        systemMicOption.setOnClickListener(v->selectAudioPath("system"));
+    }
+
+    private void selectAudioPath(String path) {
+        if ("own".equals(path) && Build.VERSION.SDK_INT<33) {
+            notice("แบบนี้ใช้ได้เฉพาะ Android 13 ขึ้นไป");
+            return;
+        }
+        getSharedPreferences("hansub",MODE_PRIVATE).edit().putString("audio_path",path).apply();
+        updateSelections(true);
+        notice("มีผลเมื่อเริ่มแปลครั้งถัดไป");
     }
 
     private void buildSpeech() {
@@ -421,6 +441,10 @@ public class ModelManagerActivity extends Activity {
         cloudQualityOption.setOn(ModelCatalog.CLOUD_QUALITY.equals(mode),animate);
         defaultSpeech.setOn(!ModelCatalog.isOfflineSpeech(speech),animate);
         offlineSpeech.setOn(ModelCatalog.isOfflineSpeech(speech),animate);
+        boolean own=Build.VERSION.SDK_INT>=33
+            && "own".equals(getSharedPreferences("hansub",MODE_PRIVATE).getString("audio_path","own"));
+        ownMicOption.setOn(own,animate);
+        systemMicOption.setOn(!own,animate);
     }
 
     private void downloadSpeech() {
