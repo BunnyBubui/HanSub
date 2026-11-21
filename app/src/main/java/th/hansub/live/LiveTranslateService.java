@@ -250,6 +250,12 @@ public class LiveTranslateService extends Service implements RecognitionListener
         if (code==SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
             failure("ไม่มีสิทธิ์ไมโครโฟน");return;
         }
+        if (Build.VERSION.SDK_INT>=31 &&
+                (code==SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED
+                    || code==SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE)) {
+            failure("บริการเสียงไม่มีโมเดลภาษาจีน โปรดดาวน์โหลดชุด Speech หรือเปลี่ยนโหมด");
+            return;
+        }
         if (code==SpeechRecognizer.ERROR_NETWORK || code==SpeechRecognizer.ERROR_NETWORK_TIMEOUT) {
             caption("NETWORK","บริการรู้จำเสียงเชื่อมต่อไม่ได้ กำลังลองใหม่…");
         }
