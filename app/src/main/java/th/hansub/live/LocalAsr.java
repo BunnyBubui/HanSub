@@ -72,11 +72,12 @@ final class LocalAsr implements MicFeeder.AudioListener {
         SileroVadModelConfig silero = new SileroVadModelConfig();
         silero.setModel(LocalModels.file(c, LocalModels.VAD).getAbsolutePath());
         silero.setThreshold(0.45f);
-        silero.setMinSilenceDuration(0.3f);
+        // A 0.5 s pause ends a sentence. Shorter cut sentences in half, so the Thai came in broken pieces.
+        silero.setMinSilenceDuration(0.5f);
         silero.setMinSpeechDuration(0.2f);
         silero.setWindowSize(WINDOW);
-        // Long speeches are cut every 6 s so the subtitle never waits too long.
-        silero.setMaxSpeechDuration(6f);
+        // Long speeches are cut every 8 s so the subtitle never waits too long.
+        silero.setMaxSpeechDuration(8f);
         VadModelConfig vadConfig = new VadModelConfig();
         vadConfig.setSileroVadModelConfig(silero);
         vadConfig.setSampleRate(RATE);

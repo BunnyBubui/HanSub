@@ -275,10 +275,9 @@ public class LiveTranslateService extends Service implements RecognitionListener
         if (!running || !modelsReady) return;
         long now=SystemClock.elapsedRealtime();
         if (!finalResult) {
+            // Live Chinese only; the Thai line changes once per finished sentence.
             captionZh(chinese);
-            if (now-lastPartialAt<600) return;
             lastPartialAt=now;
-            translate(chinese,false,null);
         } else {
             lastPartialAt=0;
             java.util.List<String> previous=dialogue.previous();
@@ -424,10 +423,12 @@ public class LiveTranslateService extends Service implements RecognitionListener
         if (chinese.isEmpty()) return;
         long now=SystemClock.elapsedRealtime();
         if (!finalResult) {
-            if (chinese.equals(lastPartial) || now-lastPartialAt<750) return;
+            // Half a sentence is shown in Chinese only. Translating it made the Thai line rewrite itself
+            // again and again as the sentence grew.
+            if (chinese.equals(lastPartial)) return;
             lastPartial=chinese;
             lastPartialAt=now;
-            translate(chinese,false,null);
+            captionZh(chinese);
         } else {
             // Always process final results, even when identical to the last partial.
             java.util.List<String> previous=dialogue.previous();
@@ -485,7 +486,8 @@ public class LiveTranslateService extends Service implements RecognitionListener
         if (!running || ticket!=generation) return;
         if (cloudAppliedTicket==ticket && ModelCatalog.FAST.equals(effectiveMode)) return;
         lastTranslateMs=SystemClock.elapsedRealtime()-startedAt;
-        captionTh(thai);
+        // ML Kit leaves words it does not know (often names) in Chinese. Show them as pinyin instead.
+        captionTh(SubText.fixLeftovers(thai,SubText::pinyin));
         if (finalResult) {
             TranslationStats.record(this,effectiveMode,SystemClock.elapsedRealtime()-startedAt);
         }
