@@ -296,10 +296,17 @@ public class LiveTranslateService extends Service implements RecognitionListener
     /** Subtitle colour per speaker number, like fansubs. Speaker 0 stays white. */
     private static final int[] SPEAKER_COLORS={0xFFFFFFFF,0xFFFFE08A,0xFF9FE3FF,0xFFB8F5B0,0xFFFFB8D9,0xFFD9C8FF};
 
+    /** Translated batches wait here until every earlier batch is shown, so lines never come out of order. */
+    private final java.util.TreeMap<Integer,Object[]> readyBatches=new java.util.TreeMap<>();
+    private int batchSeq,batchShown;
+    /** The Thai lines on screen now (newest last) and who said each. */
+    private final List<String> shownLines=new ArrayList<>();
+    private final List<Integer> shownOwners=new ArrayList<>();
+
     /**
-     * A finished stretch of speech, already cut where the voice changes. Each piece is cut again into
-     * sentences, every sentence is translated on its own (short input translates better), and the lines
-     * are shown together, coloured by speaker.
+     * Settled speech from the on-device recognizer: a clause committed mid-sentence, or what was left when
+     * the speaker paused. It may come cut where the voice changes. Each piece is cut into sentences and every
+     * sentence is translated on its own, in parallel; the results are added to the screen in order.
      */
     private void heardFinal(List<String> pieces,List<Integer> speakers) {
         if (!running || !modelsReady || pieces.isEmpty()) return;
@@ -314,27 +321,64 @@ public class LiveTranslateService extends Service implements RecognitionListener
                 owners.add(speakers.get(i));
             }
         }
+        if (lines.isEmpty()) return;
         String chinese=all.toString();
         java.util.List<String> previous=dialogue.previous();
         dialogue.record(chinese);
-        if (lines.size()==1 && owners.get(0)==0) {
+        if (ModelCatalog.isCloud(mode)) {
             translate(chinese,true,previous);
             return;
         }
         captionZh(chinese);
-        final int ticket=++generation;
+        final int seq=batchSeq++;
         final long startedAt=SystemClock.elapsedRealtime();
         final String[] thai=new String[lines.size()];
         final int[] left={lines.size()};
         String localMode=ModelCatalog.PIVOT.equals(mode)?ModelCatalog.PIVOT:ModelCatalog.FAST;
         for (int i=0;i<lines.size();i++) {
             final int index=i;
-            translateOne(localMode,lines.get(i),result->{
-                if (!running || ticket!=generation) return;
+            translateOne(localMode,lines.get(i),result->main.post(()->{
                 thai[index]=result==null?"":result;
-                if (--left[0]==0) showLines(thai,owners,localMode,startedAt);
-            });
+                if (--left[0]>0) return;
+                lastTranslateMs=SystemClock.elapsedRealtime()-startedAt;
+                TranslationStats.record(this,localMode,lastTranslateMs);
+                readyBatches.put(seq,new Object[]{thai,owners});
+                flushBatches();
+            }));
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void flushBatches() {
+        boolean changed=false;
+        while (readyBatches.containsKey(batchShown)) {
+            Object[] batch=readyBatches.remove(batchShown++);
+            String[] thai=(String[])batch[0];
+            List<Integer> owners=(List<Integer>)batch[1];
+            for (int i=0;i<thai.length;i++) {
+                String line=SubText.fixLeftovers(thai[i],SubText::pinyin);
+                if (line.isEmpty()) continue;
+                shownLines.add(line);
+                shownOwners.add(owners.get(i));
+                changed=true;
+            }
+        }
+        // Two lines roll like film subtitles: the newest at the bottom, the one before it above.
+        while (shownLines.size()>2) {shownLines.remove(0);shownOwners.remove(0);}
+        if (changed && running) captionTh(renderLines());
+    }
+
+    private CharSequence renderLines() {
+        boolean dialogueLines=new java.util.HashSet<>(shownOwners).size()>1;
+        SpannableStringBuilder text=new SpannableStringBuilder();
+        for (int i=0;i<shownLines.size();i++) {
+            if (text.length()>0) text.append('\n');
+            int start=text.length();
+            text.append(dialogueLines?"– "+shownLines.get(i):shownLines.get(i));
+            int color=SPEAKER_COLORS[Math.floorMod(shownOwners.get(i),SPEAKER_COLORS.length)];
+            text.setSpan(new ForegroundColorSpan(color),start,text.length(),Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        return text;
     }
 
     private void translateOne(String localMode,String chinese,java.util.function.Consumer<String> done) {
@@ -348,25 +392,6 @@ public class LiveTranslateService extends Service implements RecognitionListener
         } else {
             done.accept(null);
         }
-    }
-
-    private void showLines(String[] thai,List<Integer> owners,String effectiveMode,long startedAt) {
-        lastTranslateMs=SystemClock.elapsedRealtime()-startedAt;
-        TranslationStats.record(this,effectiveMode,lastTranslateMs);
-        boolean dialogueLines=new java.util.HashSet<>(owners).size()>1;
-        SpannableStringBuilder text=new SpannableStringBuilder();
-        // Only the newest three lines fit; older ones were on screen while they were being spoken.
-        int first=Math.max(0,thai.length-3);
-        for (int i=first;i<thai.length;i++) {
-            String line=SubText.fixLeftovers(thai[i],SubText::pinyin);
-            if (line.isEmpty()) continue;
-            if (text.length()>0) text.append('\n');
-            int start=text.length();
-            text.append(dialogueLines?"– "+line:line);
-            int color=SPEAKER_COLORS[Math.floorMod(owners.get(i),SPEAKER_COLORS.length)];
-            text.setSpan(new ForegroundColorSpan(color),start,text.length(),Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        }
-        if (text.length()>0) captionTh(text);
     }
 
     /** A thin line under the subtitle: input level, decode and translate time, and how far behind we are. */

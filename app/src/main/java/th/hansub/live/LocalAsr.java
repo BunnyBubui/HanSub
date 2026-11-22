@@ -6,10 +6,10 @@ import android.os.SystemClock;
 import com.k2fsa.sherpa.onnx.OfflineModelConfig;
 import com.k2fsa.sherpa.onnx.OfflineRecognizer;
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig;
+import com.k2fsa.sherpa.onnx.OfflineRecognizerResult;
 import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig;
 import com.k2fsa.sherpa.onnx.OfflineStream;
 import com.k2fsa.sherpa.onnx.SileroVadModelConfig;
-import com.k2fsa.sherpa.onnx.SpeechSegment;
 import com.k2fsa.sherpa.onnx.Vad;
 import com.k2fsa.sherpa.onnx.VadModelConfig;
 
@@ -81,8 +81,8 @@ final class LocalAsr implements MicFeeder.AudioListener {
         silero.setMinSilenceDuration(0.5f);
         silero.setMinSpeechDuration(0.2f);
         silero.setWindowSize(WINDOW);
-        // Long speeches are cut every 8 s so the subtitle never waits too long.
-        silero.setMaxSpeechDuration(8f);
+        // Continuous speech is committed piece by piece (StreamCommit), so the VAD only needs a far limit.
+        silero.setMaxSpeechDuration(20f);
         VadModelConfig vadConfig = new VadModelConfig();
         vadConfig.setSileroVadModelConfig(silero);
         vadConfig.setSampleRate(RATE);
@@ -153,6 +153,7 @@ final class LocalAsr implements MicFeeder.AudioListener {
         boolean speaking = false;
         long lastPartialAt = 0, interval = 300;
         String lastPartial = "";
+        String[] lastTokens = null;
         while (alive) {
             float[] s;
             try {
@@ -171,6 +172,13 @@ final class LocalAsr implements MicFeeder.AudioListener {
                 len = keep;
                 fed = Math.max(0, fed - drop);
             }
+            // While talking, sound before the uncommitted part is no longer needed.
+            if (speaking && speechStart > RATE * 6) {
+                System.arraycopy(buf, speechStart, buf, 0, len - speechStart);
+                len -= speechStart;
+                fed -= speechStart;
+                speechStart = 0;
+            }
             if (len + s.length > buf.length) buf = Arrays.copyOf(buf, Math.max(buf.length * 2, len + s.length));
             System.arraycopy(s, 0, buf, len, s.length);
             len += s.length;
@@ -182,53 +190,92 @@ final class LocalAsr implements MicFeeder.AudioListener {
                     speaking = true;
                     speechStart = Math.max(0, fed - PREROLL);
                     lastPartialAt = SystemClock.elapsedRealtime();
+                    lastTokens = null;
                 }
             }
 
             boolean finished = false;
             while (!vad.empty()) {
-                SpeechSegment segment = vad.front();
                 vad.pop();
-                long t0 = SystemClock.elapsedRealtime();
-                float[] seg = segment.getSamples();
-                List<String> texts = new ArrayList<>();
-                List<Integer> who = new ArrayList<>();
-                List<int[]> pieces = speakers != null ? speakers.split(seg)
-                        : SpeakerSplit.pieces(new ArrayList<>(), seg.length);
-                for (int[] p : pieces) {
-                    String text = decode(Arrays.copyOfRange(seg, p[0], p[1]));
-                    if (text.isEmpty()) continue;
-                    texts.add(text);
-                    who.add(speakers != null ? speakers.label(seg, p[0], p[1]) : 0);
-                }
-                long ms = SystemClock.elapsedRealtime() - t0;
-                lastDecodeMs = ms;
-                if (!texts.isEmpty()) listener.onFinal(texts, who, ms);
                 finished = true;
             }
             if (finished) {
+                // The speaker paused: whatever was not committed yet is read once more and sent.
+                if (fed - speechStart > RATE / 4) {
+                    long t0 = SystemClock.elapsedRealtime();
+                    float[] rest = Arrays.copyOfRange(buf, speechStart, fed);
+                    List<String> texts = new ArrayList<>();
+                    List<Integer> who = new ArrayList<>();
+                    List<int[]> pieces = speakers != null ? speakers.split(rest)
+                            : SpeakerSplit.pieces(new ArrayList<>(), rest.length);
+                    for (int[] p : pieces) {
+                        String text = decode(Arrays.copyOfRange(rest, p[0], p[1]));
+                        if (text.isEmpty()) continue;
+                        texts.add(text);
+                        who.add(speakers != null ? speakers.label(rest, p[0], p[1]) : 0);
+                    }
+                    long ms = SystemClock.elapsedRealtime() - t0;
+                    lastDecodeMs = ms;
+                    if (!texts.isEmpty()) listener.onFinal(texts, who, ms);
+                }
                 speaking = false;
                 lastPartial = "";
+                lastTokens = null;
                 len = 0;
                 fed = 0;
+                speechStart = 0;
                 continue;
             }
 
-            // Live line while the sentence is still going. Skipped when we are behind, so finals stay on time.
+            // While the sentence goes on: re-read it, show it live, and commit the part that has settled.
             long now = SystemClock.elapsedRealtime();
             if (speaking && now - lastPartialAt >= interval && queue.size() < 4 && fed - speechStart > RATE / 3) {
                 long t0 = SystemClock.elapsedRealtime();
-                String text = decode(Arrays.copyOfRange(buf, speechStart, fed));
+                OfflineRecognizerResult r = read(Arrays.copyOfRange(buf, speechStart, fed));
                 long ms = SystemClock.elapsedRealtime() - t0;
                 lastDecodeMs = ms;
                 // A slow phone decodes less often instead of falling behind.
-                interval = Math.max(250, Math.min(1200, ms * 2));
+                interval = Math.max(250, Math.min(1000, ms * 2));
                 lastPartialAt = SystemClock.elapsedRealtime();
+                String[] tokens = r.getTokens();
+                float[] times = r.getTimestamps();
+                float audioS = (fed - speechStart) / (float) RATE;
+                int k = StreamCommit.commitIndex(tokens, times, lastTokens, audioS);
+                if (k >= 0) {
+                    String text = StreamCommit.text(tokens, k);
+                    int cut = speechStart + Math.round(StreamCommit.cutSeconds(times, k, tokens.length) * RATE);
+                    cut = Math.max(speechStart + RATE / 4, Math.min(cut, fed));
+                    if (!text.isEmpty()) {
+                        int id = speakers != null ? speakers.label(buf, speechStart, cut) : 0;
+                        List<String> one = new ArrayList<>();
+                        one.add(text);
+                        List<Integer> who = new ArrayList<>();
+                        who.add(id);
+                        listener.onFinal(one, who, ms);
+                    }
+                    speechStart = cut;
+                    lastTokens = null;
+                    lastPartial = "";
+                    continue;
+                }
+                lastTokens = tokens;
+                String text = AsrText.clean(r.getText());
                 if (!text.isEmpty() && !text.equals(lastPartial)) {
                     lastPartial = text;
                     listener.onPartial(text);
                 }
             }
+        }
+    }
+
+    private OfflineRecognizerResult read(float[] samples) {
+        OfflineStream stream = recognizer.createStream();
+        try {
+            stream.acceptWaveform(samples, RATE);
+            recognizer.decode(stream);
+            return recognizer.getResult(stream);
+        } finally {
+            stream.release();
         }
     }
 
