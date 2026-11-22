@@ -39,4 +39,10 @@ public class StreamCommitTest {
         String[] now = {"我", "们", "去", "吧", "，", "你"};
         assertEquals(-1, StreamCommit.commitIndex(now, S, before, 2.0f));
     }
+
+    @Test public void evenSpeechCutsAtTheLatePlaceNotTheFirst() {
+        String[] t = {"一", "二", "三", "四", "五", "六", "七", "八", "九", "十"};
+        float[] s = {0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f, 2.25f, 2.5f};
+        assertEquals(8, StreamCommit.commitIndex(t, s, t, 5.0f));
+    }
 }

@@ -9,6 +9,7 @@ import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig;
 import com.k2fsa.sherpa.onnx.OfflineRecognizerResult;
 import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig;
 import com.k2fsa.sherpa.onnx.OfflineStream;
+import com.k2fsa.sherpa.onnx.OfflineZipformerCtcModelConfig;
 import com.k2fsa.sherpa.onnx.SileroVadModelConfig;
 import com.k2fsa.sherpa.onnx.Vad;
 import com.k2fsa.sherpa.onnx.VadModelConfig;
@@ -44,6 +45,8 @@ final class LocalAsr implements MicFeeder.AudioListener {
     private static final long SILENCE_MS = 500;
 
     private final OfflineRecognizer recognizer;
+    /** True for Zipformer-CTC: its tokens are raw bytes, so they are turned into characters first. */
+    private final boolean zip;
     private final Vad vad;
     private final Listener listener;
     /** Null when the speaker model is missing or switched off. */
@@ -51,6 +54,11 @@ final class LocalAsr implements MicFeeder.AudioListener {
     private final LinkedBlockingQueue<float[]> queue = new LinkedBlockingQueue<>(3000);
     private Thread worker;
     private volatile boolean alive;
+
+    /** Name of the model in use, for the stats line. */
+    String engineName() {
+        return zip ? "Zipformer" : "SenseVoice";
+    }
 
     /** Loudness of the last chunk, 0..1, for the stats line. */
     volatile float level;
@@ -65,13 +73,21 @@ final class LocalAsr implements MicFeeder.AudioListener {
         this.listener = listener;
         int cores = Runtime.getRuntime().availableProcessors();
 
-        OfflineSenseVoiceModelConfig sense = new OfflineSenseVoiceModelConfig();
-        sense.setModel(LocalModels.file(c, LocalModels.MODEL).getAbsolutePath());
-        sense.setLanguage("zh");
-        sense.setUseInverseTextNormalization(true);
+        zip = LocalModels.useZip(c) && LocalModels.zipReady(c);
         OfflineModelConfig model = new OfflineModelConfig();
-        model.setSenseVoice(sense);
-        model.setTokens(LocalModels.file(c, LocalModels.TOKENS).getAbsolutePath());
+        if (zip) {
+            OfflineZipformerCtcModelConfig ctc = new OfflineZipformerCtcModelConfig();
+            ctc.setModel(LocalModels.zipFile(c, LocalModels.MODEL).getAbsolutePath());
+            model.setZipformerCtc(ctc);
+            model.setTokens(LocalModels.zipFile(c, LocalModels.TOKENS).getAbsolutePath());
+        } else {
+            OfflineSenseVoiceModelConfig sense = new OfflineSenseVoiceModelConfig();
+            sense.setModel(LocalModels.file(c, LocalModels.MODEL).getAbsolutePath());
+            sense.setLanguage("zh");
+            sense.setUseInverseTextNormalization(true);
+            model.setSenseVoice(sense);
+            model.setTokens(LocalModels.file(c, LocalModels.TOKENS).getAbsolutePath());
+        }
         model.setNumThreads(Math.max(2, Math.min(4, cores / 2)));
         model.setProvider("cpu");
         OfflineRecognizerConfig config = new OfflineRecognizerConfig();
@@ -251,6 +267,11 @@ final class LocalAsr implements MicFeeder.AudioListener {
                 lastPartialAt = SystemClock.elapsedRealtime();
                 String[] tokens = r.getTokens();
                 float[] times = r.getTimestamps();
+                if (zip) {
+                    ByteBpe.Chars chars = ByteBpe.decode(tokens, times);
+                    tokens = chars.text;
+                    times = chars.times;
+                }
                 float audioS = (fed - speechStart) / (float) RATE;
                 int k = StreamCommit.commitIndex(tokens, times, lastTokens, audioS);
                 if (k >= 0) {

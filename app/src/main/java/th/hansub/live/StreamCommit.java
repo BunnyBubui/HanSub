@@ -54,7 +54,8 @@ final class StreamCommit {
             chars += tokens[i].trim().length();
             if (chars < MIN_CHARS) continue;
             float gap = times[i + 1] - times[i];
-            if (gap > widest) {
+            // A tie goes to the later place, so the cut leaves less speech waiting.
+            if (gap >= widest) {
                 widest = gap;
                 best = i;
             }

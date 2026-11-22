@@ -29,12 +29,30 @@ final class LocalModels {
             "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"
                     + "3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx", "5000000"};
 
+    private static String[] vadFile() {
+        return new String[] {VAD, "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
+                "500000", DIR};
+    }
+
     /** File name, address, and the smallest size a complete file can have (rejects error pages). */
     private static final String[][] FILES = {
             {TOKENS, HF + TOKENS, "20000"},
             {VAD, "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx", "500000"},
             {MODEL, HF + MODEL, "100000000"},
     };
+
+    /** The other speech model: Zipformer-CTC for Chinese, more exact than SenseVoice on fast speech in tests. */
+    static final String ZIP_NAME = "Zipformer-CTC จีน int8 (2025-07-03)";
+    private static final String ZIP_DIR = "asr/zipformer-ctc-zh-int8-2025-07-03";
+    private static final String ZIP_HF =
+            "https://huggingface.co/csukuangfj/sherpa-onnx-zipformer-ctc-zh-int8-2025-07-03/resolve/main/";
+    /** Same four columns as FILES, plus the folder the file goes in. */
+    private static final String[][] ZIP_FILES = {
+            {TOKENS, ZIP_HF + TOKENS, "10000", ZIP_DIR},
+            {MODEL, ZIP_HF + MODEL, "300000000", ZIP_DIR},
+    };
+    /** Silero VAD is shared by both models and lives with SenseVoice. */
+    private static final String[] VAD_FILE = vadFile();
 
     static final int IDLE = 0, RUNNING = 1, DONE = 2, FAILED = 3;
     static volatile int state = IDLE;
@@ -50,6 +68,37 @@ final class LocalModels {
 
     static File file(Context c, String name) {
         return new File(dir(c), name);
+    }
+
+    /** A file of the Zipformer-CTC model (model.int8.onnx or tokens.txt). */
+    static File zipFile(Context c, String name) {
+        return new File(new File(c.getFilesDir(), ZIP_DIR), name);
+    }
+
+    /** True when the person chose Zipformer-CTC in the Model Manager. */
+    static boolean useZip(Context c) {
+        return "zip".equals(c.getSharedPreferences("hansub", Context.MODE_PRIVATE).getString("local_model", "sense"));
+    }
+
+    static boolean zipReady(Context c) {
+        for (String[] f : ZIP_FILES) {
+            File file = new File(new File(c.getFilesDir(), f[3]), f[0]);
+            if (!file.isFile() || file.length() < Long.parseLong(f[2])) return false;
+        }
+        File vad = file(c, VAD);
+        return vad.isFile() && vad.length() >= Long.parseLong(VAD_FILE[2]);
+    }
+
+    /** Whether the model the person chose has all its files. */
+    static boolean activeReady(Context c) {
+        return useZip(c) ? zipReady(c) : ready(c);
+    }
+
+    static long zipSizeOnDisk(Context c) {
+        long sum = 0;
+        File[] files = new File(c.getFilesDir(), ZIP_DIR).listFiles();
+        if (files != null) for (File f : files) sum += f.length();
+        return sum;
     }
 
     static boolean ready(Context c) {
@@ -72,8 +121,26 @@ final class LocalModels {
         return sum;
     }
 
-    /** Starts the download on a background thread. Does nothing if one is already running. */
-    static synchronized void download(Context context) {
+    /** Starts the SenseVoice download on a background thread. Does nothing if one is already running. */
+    static void download(Context context) {
+        String[][] all = Arrays.copyOf(FILES, FILES.length + 1);
+        all[FILES.length] = withDir(SPEAKER_FILE);
+        start(context, all);
+    }
+
+    /** Starts the Zipformer-CTC download (its two files, plus the VAD and speaker model if they are missing). */
+    static void downloadZip(Context context) {
+        String[][] all = Arrays.copyOf(ZIP_FILES, ZIP_FILES.length + 2);
+        all[ZIP_FILES.length] = VAD_FILE;
+        all[ZIP_FILES.length + 1] = withDir(SPEAKER_FILE);
+        start(context, all);
+    }
+
+    private static String[] withDir(String[] f) {
+        return new String[] {f[0], f[1], f[2], DIR};
+    }
+
+    private static synchronized void start(Context context, String[][] all) {
         if (state == RUNNING) return;
         Context app = context.getApplicationContext();
         state = RUNNING;
@@ -83,12 +150,10 @@ final class LocalModels {
         totalBytes = 0;
         new Thread(() -> {
             try {
-                File dir = dir(app);
-                if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("สร้างโฟลเดอร์ไม่ได้");
-                String[][] all = Arrays.copyOf(FILES, FILES.length + 1);
-                all[FILES.length] = SPEAKER_FILE;
                 for (String[] f : all) {
-                    File target = file(app, f[0]);
+                    File dir = f.length > 3 ? new File(app.getFilesDir(), f[3]) : dir(app);
+                    if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("สร้างโฟลเดอร์ไม่ได้");
+                    File target = new File(dir, f[0]);
                     long min = Long.parseLong(f[2]);
                     if (target.isFile() && target.length() >= min) continue;
                     fetch(f[1], target, min);
@@ -108,6 +173,13 @@ final class LocalModels {
     static void delete(Context c) {
         cancel = true;
         File[] files = dir(c).listFiles();
+        if (files != null) for (File f : files) f.delete();
+        state = IDLE;
+    }
+
+    static void deleteZip(Context c) {
+        cancel = true;
+        File[] files = new File(c.getFilesDir(), ZIP_DIR).listFiles();
         if (files != null) for (File f : files) f.delete();
         state = IDLE;
     }

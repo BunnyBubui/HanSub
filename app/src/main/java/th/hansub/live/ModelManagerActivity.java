@@ -47,7 +47,7 @@ public class ModelManagerActivity extends Activity {
     private FrameLayout host;
     private TextView benchmarkOutput, performance;
     private Notice notice;
-    private Option fastOption, pivotOption, cloudFastOption, cloudQualityOption, defaultSpeech, offlineSpeech, ownMicOption, systemMicOption, playbackOption, localEngineOption, systemEngineOption;
+    private Option fastOption, pivotOption, cloudFastOption, cloudQualityOption, defaultSpeech, offlineSpeech, ownMicOption, systemMicOption, playbackOption, localEngineOption, systemEngineOption, zipOption;
     private TextView localStatus;
     private Option speakerOption;
     private Glass.Btn localButton;
@@ -212,6 +212,22 @@ public class ModelManagerActivity extends Activity {
         localEngineOption.setOnClickListener(v->selectEngine("local"));
         systemEngineOption=option(card,"ตัวรู้จำเสียงของ Android • แบบเดิม","ใช้เมื่อยังไม่มีโมเดล หรือเครื่องช้ามาก");
         systemEngineOption.setOnClickListener(v->selectEngine("system"));
+        zipOption=option(card,"ใช้ Zipformer-CTC แทน SenseVoice • ทดลอง",
+                "ในการทดสอบกับคลิปจีน 4 คลิปบนคอมพิวเตอร์ ถอดพูดเร็วและเพลงได้แม่นกว่า ความเร็วใกล้กัน แต่ไม่ใส่เครื่องหมายวรรคตอน "
+                +"และยังไม่เคยทดสอบบนมือถือ ต้องโหลดเพิ่มประมาณ 370 MB");
+        zipOption.setOnClickListener(v->{
+            boolean on=!LocalModels.useZip(this);
+            getSharedPreferences("hansub",MODE_PRIVATE).edit().putString("local_model",on?"zip":"sense").apply();
+            zipOption.setOn(on,true);
+            if (on && !LocalModels.zipReady(this)) {
+                LocalModels.downloadZip(this);
+                notice("เริ่มโหลด Zipformer-CTC แนะนำให้ใช้ Wi-Fi");
+            } else {
+                notice(on?"ใช้ Zipformer-CTC เมื่อเริ่มแปลครั้งถัดไป":"กลับไปใช้ SenseVoice เมื่อเริ่มแปลครั้งถัดไป");
+            }
+            refreshLocal();
+        });
+        zipOption.setOn(LocalModels.useZip(this),false);
         speakerOption=option(card,"แยกเสียงผู้พูด",
                 "ตัดซับตรงที่เสียงคนพูดเปลี่ยน และใส่สีคนละสีให้แต่ละเสียง ต้องโหลดเพิ่มประมาณ 28 MB");
         speakerOption.setOnClickListener(v->{
@@ -241,13 +257,21 @@ public class ModelManagerActivity extends Activity {
     private void selectEngine(String engine) {
         getSharedPreferences("hansub",MODE_PRIVATE).edit().putString("asr_engine",engine).apply();
         updateSelections(true);
-        if ("local".equals(engine) && !LocalModels.ready(this)) notice("กดดาวน์โหลดโมเดลด้านล่างก่อนใช้งาน");
+        if ("local".equals(engine) && !LocalModels.activeReady(this)) notice("กดดาวน์โหลดโมเดลด้านล่างก่อนใช้งาน");
         else notice("มีผลเมื่อเริ่มแปลครั้งถัดไป");
     }
 
     private void onLocalButton() {
         if (LocalModels.state==LocalModels.RUNNING) {
             LocalModels.cancel();
+        } else if (LocalModels.useZip(this)) {
+            if (LocalModels.zipReady(this)) {
+                LocalModels.deleteZip(this);
+                notice("ลบ Zipformer-CTC แล้ว");
+            } else {
+                LocalModels.downloadZip(this);
+                notice("เริ่มดาวน์โหลด แนะนำให้ใช้ Wi-Fi");
+            }
         } else if (LocalModels.ready(this) && !LocalModels.speakerReady(this)) {
             LocalModels.download(this);
             notice("กำลังโหลดตัวแยกเสียงผู้พูด");
@@ -270,6 +294,19 @@ public class ModelManagerActivity extends Activity {
             localStatus.setText(total>0?"กำลังดาวน์โหลด "+done+" / "+total+" MB (ไฟล์ปัจจุบัน)":"กำลังดาวน์โหลด "+done+" MB…");
             Glass.setButton(localButton,"ยกเลิก",Glass.FILL_STRONG,Glass.TEXT);
             handler.postDelayed(this::refreshLocal,500);
+            return;
+        }
+        if (LocalModels.useZip(this) && LocalModels.zipReady(this)) {
+            localStatus.setText(LocalModels.ZIP_NAME+" พร้อมใช้ • "+(LocalModels.zipSizeOnDisk(this)/1048576)+" MB"
+                    +(LocalModels.speakerReady(this)?" • มีตัวแยกเสียงผู้พูด":" • ยังไม่มีตัวแยกเสียงผู้พูด"));
+            Glass.setButton(localButton,"ลบ Zipformer-CTC",Glass.FILL_STRONG,Glass.TEXT);
+            return;
+        }
+        if (LocalModels.useZip(this)) {
+            localStatus.setText(st==LocalModels.FAILED?"ดาวน์โหลดไม่สำเร็จ: "+LocalModels.error+" กดเพื่อทำต่อจากเดิม"
+                    :"ยังไม่ได้ดาวน์โหลด Zipformer-CTC");
+            Glass.setButton(localButton,st==LocalModels.FAILED?"ดาวน์โหลดต่อ":"ดาวน์โหลด Zipformer-CTC (~370 MB)",
+                    Glass.ACCENT,Glass.ON_ACCENT);
             return;
         }
         if (LocalModels.ready(this) && !LocalModels.speakerReady(this)) {

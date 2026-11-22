@@ -208,7 +208,7 @@ public class LiveTranslateService extends Service implements RecognitionListener
                 ?"กำลังฟัง (โหมด Pivot)…":ModelCatalog.isCloud(mode)
                 ?"กำลังฟัง (Cloud + ML Kit fallback)…":"กำลังฟัง (โหมด Fast)…");
         if ("local".equals(getSharedPreferences("hansub",MODE_PRIVATE).getString("asr_engine","local"))) {
-            if (LocalModels.ready(this)) {
+            if (LocalModels.activeReady(this)) {
                 startLocalEngine();
                 return;
             }
@@ -540,7 +540,7 @@ public class LiveTranslateService extends Service implements RecognitionListener
                 for (int i=0;i<5;i++) meter.append(i<bars?'\u25AE':'\u25AF');
                 String behind=asr.backlog>1?String.format(java.util.Locale.US," · ค้าง %.1fs",asr.backlog*0.2f):"";
                 String better=mt!=null?" · Hy-MT2 "+lastMtMs+"ms":mtNote.isEmpty()?"":" · "+mtNote;
-                statsView.setText("เสียง "+meter+" · ถอด "+asr.lastDecodeMs+"ms · ร่าง "+lastTranslateMs+"ms"+better
+                statsView.setText("เสียง "+meter+" · ถอด "+asr.engineName()+" "+asr.lastDecodeMs+"ms · ร่าง "+lastTranslateMs+"ms"+better
                         +" · ช้า "+String.format(java.util.Locale.US,"%.1f",asr.lagMs/1000f)+"s"+behind);
                 main.postDelayed(this,500);
             }
