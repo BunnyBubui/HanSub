@@ -7,3 +7,13 @@ local.properties
 captures/
 *.jks
 *.keystore
+
+# The shared debug key: every build is signed with it, so a new APK installs over the old one.
+!app/hansub-debug.keystore
+
+# Fetched by CI
+app/libs/
+
+# Fetched by CMake at a pinned commit (see app/src/main/cpp/CMakeLists.txt)
+app/src/main/cpp/llama.cpp/
+.cxx/

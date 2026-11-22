@@ -1,7 +1,7 @@
 name: Build HanSub and publish APK
 on:
   push:
-    branches: [main]
+    branches: [main, ui/lumora-glass]
   pull_request:
   workflow_dispatch:
 concurrency:
@@ -21,10 +21,16 @@ jobs:
       - name: Install Android SDK using preinstalled command-line tools
         run: |
           "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --install \
-            "platforms;android-35" "build-tools;35.0.0"
+            "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
+      - name: Fetch sherpa-onnx Android library
+        run: |
+          mkdir -p app/libs
+          curl -fsSL --retry 3 -o app/libs/sherpa-onnx-2.0.2.aar \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.2/sherpa-onnx-2.0.2.aar
+          unzip -l app/libs/sherpa-onnx-2.0.2.aar | grep -E "classes.jar|libsherpa-onnx-jni.so"
       - name: Check Python server syntax
         run: python -m compileall -q backend
       - name: Android unit tests
@@ -60,5 +66,34 @@ jobs:
               --target "$GITHUB_SHA" --title "HanSub v0.3 Preview (Debug APK)" \
               --prerelease \
               --notes "Pre-release Android debug build. Supports Mandarin live subtitles, ML Kit translation, model manager, and optional cloud context mode. Cloud mode requires your own HTTPS backend. Not yet validated on physical devices."
+          fi
+          gh release upload "$TAG" dist/HanSub-debug.apk --clobber --repo "$GH_REPO"
+
+  publish-branch-preview:
+    # Always-latest download for the UI branch: one fixed link that each new build overwrites.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/ui/lumora-glass'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: HanSub-debug-apk
+          path: dist
+      - name: Publish branch preview APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cp dist/app-debug.apk dist/HanSub-debug.apk
+          TAG="preview-ui"
+          VERSION_CODE=$((1000 + GITHUB_RUN_NUMBER))
+          NOTES="Preview build of the UI branch. versionCode: ${VERSION_CODE}. Commit ${GITHUB_SHA}. Debug APK, signed with the shared key so it installs over the previous preview."
+          if ! gh release view "$TAG" --repo "$GH_REPO" > /dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GH_REPO" --target "$GITHUB_SHA" \
+              --title "HanSub UI preview (latest)" --prerelease --notes "$NOTES"
+          else
+            gh release edit "$TAG" --repo "$GH_REPO" --notes "$NOTES"
           fi
           gh release upload "$TAG" dist/HanSub-debug.apk --clobber --repo "$GH_REPO"
