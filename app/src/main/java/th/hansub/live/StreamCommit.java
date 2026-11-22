@@ -13,7 +13,7 @@ final class StreamCommit {
     /** Sentence and clause marks that SenseVoice writes. */
     private static final String MARKS = "，。！？；、,.!?;…";
     /** A mark this close to the newest sound may still change, so it is not used yet. */
-    static final float TAIL_GUARD_S = 0.6f;
+    static final float TAIL_GUARD_S = 0.45f;
     /** Without any mark, force a cut once this much uncommitted speech has piled up. */
     static final float FORCE_AFTER_S = 4.5f;
     private static final int MIN_CHARS = 4;

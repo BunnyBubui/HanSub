@@ -40,6 +40,8 @@ final class LocalAsr implements MicFeeder.AudioListener {
     private static final int RATE = MicFeeder.RATE;
     private static final int WINDOW = 512;
     private static final int PREROLL = RATE * 4 / 10;
+    /** A pause this long ends a sentence. */
+    private static final long SILENCE_MS = 500;
 
     private final OfflineRecognizer recognizer;
     private final Vad vad;
@@ -55,6 +57,8 @@ final class LocalAsr implements MicFeeder.AudioListener {
     /** How long the last decode took. */
     volatile long lastDecodeMs;
     volatile int backlog;
+    /** How long the last committed sentence waited after it was spoken, before it was handed on (ms). */
+    volatile long lagMs;
 
     /** Loads both models. Takes a second or two, so call it off the main thread. */
     LocalAsr(Context c, Listener listener) {
@@ -78,7 +82,7 @@ final class LocalAsr implements MicFeeder.AudioListener {
         silero.setModel(LocalModels.file(c, LocalModels.VAD).getAbsolutePath());
         silero.setThreshold(0.45f);
         // A 0.5 s pause ends a sentence. Shorter cut sentences in half, so the Thai came in broken pieces.
-        silero.setMinSilenceDuration(0.5f);
+        silero.setMinSilenceDuration(SILENCE_MS / 1000f);
         silero.setMinSpeechDuration(0.2f);
         silero.setWindowSize(WINDOW);
         // Continuous speech is committed piece by piece (StreamCommit), so the VAD only needs a far limit.
@@ -200,6 +204,7 @@ final class LocalAsr implements MicFeeder.AudioListener {
                 finished = true;
             }
             if (finished) {
+                boolean sent = false;
                 // The speaker paused: whatever was not committed yet is read once more and sent.
                 if (fed - speechStart > RATE / 4) {
                     long t0 = SystemClock.elapsedRealtime();
@@ -216,8 +221,14 @@ final class LocalAsr implements MicFeeder.AudioListener {
                     }
                     long ms = SystemClock.elapsedRealtime() - t0;
                     lastDecodeMs = ms;
-                    if (!texts.isEmpty()) listener.onFinal(texts, who, ms);
+                    lagMs = SILENCE_MS + ms;
+                    if (!texts.isEmpty()) {
+                        sent = true;
+                        listener.onFinal(texts, who, ms);
+                    }
                 }
+                // Nothing was sent (noise): tell the screen to drop the live line it was showing.
+                if (!sent && !lastPartial.isEmpty()) listener.onPartial("");
                 speaking = false;
                 lastPartial = "";
                 lastTokens = null;
@@ -234,8 +245,9 @@ final class LocalAsr implements MicFeeder.AudioListener {
                 OfflineRecognizerResult r = read(Arrays.copyOfRange(buf, speechStart, fed));
                 long ms = SystemClock.elapsedRealtime() - t0;
                 lastDecodeMs = ms;
-                // A slow phone decodes less often instead of falling behind.
-                interval = Math.max(250, Math.min(1000, ms * 2));
+                // A slow phone decodes less often instead of falling behind. Idle time is a third of the decode time,
+                // so a 250 ms decode is followed by a new one about 330 ms later (it was twice as long before).
+                interval = Math.max(200, Math.min(1000, ms * 13 / 10));
                 lastPartialAt = SystemClock.elapsedRealtime();
                 String[] tokens = r.getTokens();
                 float[] times = r.getTimestamps();
@@ -246,6 +258,7 @@ final class LocalAsr implements MicFeeder.AudioListener {
                     int cut = speechStart + Math.round(StreamCommit.cutSeconds(times, k, tokens.length) * RATE);
                     cut = Math.max(speechStart + RATE / 4, Math.min(cut, fed));
                     if (!text.isEmpty()) {
+                        lagMs = (fed - cut) * 1000L / RATE + ms;
                         int id = speakers != null ? speakers.label(buf, speechStart, cut) : 0;
                         List<String> one = new ArrayList<>();
                         one.add(text);

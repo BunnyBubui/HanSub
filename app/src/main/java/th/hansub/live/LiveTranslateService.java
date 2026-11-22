@@ -77,6 +77,14 @@ public class LiveTranslateService extends Service implements RecognitionListener
     private volatile int oldestShownSeq;
     /** Which sentence each shown line is: (batch number << 8) | position in the batch. */
     private final List<Integer> shownKeys=new ArrayList<>();
+    /**
+     * Live Thai for the part of the sentence still being spoken, shown dimmer under the settled lines. It is
+     * replaced, never added to, so nothing is repeated when the part settles.
+     */
+    private String tentative="";
+    private String partialSource="",partialWaiting;
+    private boolean partialBusy;
+    private int partialTicket;
     /** Hy-MT2 answers that arrived before their ML Kit draft was shown. */
     private final java.util.HashMap<Integer,String> mtResults=new java.util.HashMap<>();
     private volatile long lastTranslateMs,lastMtMs;
@@ -318,9 +326,16 @@ public class LiveTranslateService extends Service implements RecognitionListener
         if (!running || !modelsReady) return;
         long now=SystemClock.elapsedRealtime();
         if (!finalResult) {
-            // Live Chinese only; the Thai line changes once per finished sentence.
+            // Live Chinese, and a quick ML Kit Thai draft of it; settled sentences are added by heardFinal.
             captionZh(chinese);
             lastPartialAt=now;
+            if (localAsr!=null) {
+                if (chinese.isEmpty()) {
+                    if (!tentative.isEmpty()) {clearTentative();updateThai(renderLines());}
+                } else {
+                    liveDraft(chinese);
+                }
+            }
         } else {
             lastPartialAt=0;
             java.util.List<String> previous=dialogue.previous();
@@ -347,6 +362,7 @@ public class LiveTranslateService extends Service implements RecognitionListener
     private void heardFinal(List<String> pieces,List<Integer> speakers) {
         if (!running || !modelsReady || pieces.isEmpty()) return;
         lastPartialAt=0;
+        clearTentative();
         List<String> lines=new ArrayList<>();
         List<Integer> owners=new ArrayList<>();
         StringBuilder all=new StringBuilder();
@@ -383,6 +399,38 @@ public class LiveTranslateService extends Service implements RecognitionListener
                 flushBatches();
             }));
         }
+    }
+
+    /** Quick ML Kit translation of the sentence as it is being spoken. One request at a time; the newest text wins. */
+    private void liveDraft(String chinese) {
+        if (!getSharedPreferences("hansub",MODE_PRIVATE).getBoolean("live_draft",true) || ModelCatalog.isCloud(mode)) return;
+        if (chinese.length()<2 || chinese.equals(partialSource)) return;
+        if (partialBusy) {partialWaiting=chinese;return;}
+        partialBusy=true;
+        partialSource=chinese;
+        final int ticket=partialTicket;
+        String localMode=ModelCatalog.PIVOT.equals(mode)?ModelCatalog.PIVOT:ModelCatalog.FAST;
+        translateOne(localMode,chinese,result->main.post(()->{
+            partialBusy=false;
+            if (running && ticket==partialTicket && result!=null) {
+                String draft=SubText.fixLeftovers(result,SubText::pinyin);
+                if (!draft.equals(tentative)) {
+                    tentative=draft;
+                    updateThai(renderLines());
+                }
+            }
+            String next=partialWaiting;
+            partialWaiting=null;
+            if (next!=null && running) liveDraft(next);
+        }));
+    }
+
+    /** A settled sentence replaces the live draft: forget it and ignore any draft still being translated. */
+    private void clearTentative() {
+        partialTicket++;
+        partialSource="";
+        partialWaiting=null;
+        tentative="";
     }
 
     /** Sends each sentence to Hy-MT2, if it is loaded. The better translation replaces the draft when it arrives. */
@@ -444,14 +492,24 @@ public class LiveTranslateService extends Service implements RecognitionListener
     }
 
     private CharSequence renderLines() {
-        boolean dialogueLines=new java.util.HashSet<>(shownOwners).size()>1;
+        // With a live draft on screen only the newest settled line stays above it, so there are never more than two lines.
+        int keep=tentative.isEmpty()?2:1;
+        int from=Math.max(0,shownLines.size()-keep);
+        boolean dialogueLines=new java.util.HashSet<>(shownOwners.subList(from,shownOwners.size())).size()>1;
         SpannableStringBuilder text=new SpannableStringBuilder();
-        for (int i=0;i<shownLines.size();i++) {
+        for (int i=from;i<shownLines.size();i++) {
             if (text.length()>0) text.append('\n');
             int start=text.length();
             text.append(dialogueLines?"– "+shownLines.get(i):shownLines.get(i));
             int color=SPEAKER_COLORS[Math.floorMod(shownOwners.get(i),SPEAKER_COLORS.length)];
             text.setSpan(new ForegroundColorSpan(color),start,text.length(),Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        if (!tentative.isEmpty()) {
+            if (text.length()>0) text.append('\n');
+            int start=text.length();
+            text.append(tentative);
+            // Dimmer than settled lines, so it is clear this part may still change.
+            text.setSpan(new ForegroundColorSpan(0xB3FFFFFF),start,text.length(),Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
         return text;
     }
@@ -482,7 +540,8 @@ public class LiveTranslateService extends Service implements RecognitionListener
                 for (int i=0;i<5;i++) meter.append(i<bars?'\u25AE':'\u25AF');
                 String behind=asr.backlog>1?String.format(java.util.Locale.US," · ค้าง %.1fs",asr.backlog*0.2f):"";
                 String better=mt!=null?" · Hy-MT2 "+lastMtMs+"ms":mtNote.isEmpty()?"":" · "+mtNote;
-                statsView.setText("เสียง "+meter+" · ถอด "+asr.lastDecodeMs+"ms · ร่าง "+lastTranslateMs+"ms"+better+behind);
+                statsView.setText("เสียง "+meter+" · ถอด "+asr.lastDecodeMs+"ms · ร่าง "+lastTranslateMs+"ms"+better
+                        +" · ช้า "+String.format(java.util.Locale.US,"%.1f",asr.lagMs/1000f)+"s"+behind);
                 main.postDelayed(this,500);
             }
         });

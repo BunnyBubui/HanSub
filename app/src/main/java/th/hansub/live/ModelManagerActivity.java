@@ -51,7 +51,7 @@ public class ModelManagerActivity extends Activity {
     private TextView localStatus;
     private Option speakerOption;
     private Glass.Btn localButton;
-    private Option mtOption;
+    private Option mtOption, liveOption;
     private TextView mtStatus;
     private Glass.Btn mtButton;
     private SpeechRecognizer speechDownloader;
@@ -221,6 +221,15 @@ public class ModelManagerActivity extends Activity {
             notice(on?"เปิดการแยกเสียงผู้พูดแล้ว มีผลเมื่อเริ่มแปลครั้งถัดไป":"ปิดการแยกเสียงผู้พูดแล้ว");
         });
         speakerOption.setOn(getSharedPreferences("hansub",MODE_PRIVATE).getBoolean("speaker_split",true),false);
+        liveOption=option(card,"แสดงคำแปลสดระหว่างพูด",
+                "ขึ้นคำแปลจาก ML Kit แบบสีจางขณะที่ยังพูดไม่จบ แล้วเปลี่ยนเป็นคำแปลจริงเมื่อจบท่อน ซับจะเร็วขึ้นแต่เปลี่ยนตัวอักษรบ่อยกว่า");
+        liveOption.setOnClickListener(v->{
+            boolean on=!getSharedPreferences("hansub",MODE_PRIVATE).getBoolean("live_draft",true);
+            getSharedPreferences("hansub",MODE_PRIVATE).edit().putBoolean("live_draft",on).apply();
+            liveOption.setOn(on,true);
+            notice(on?"เปิดคำแปลสดแล้ว มีผลเมื่อเริ่มแปลครั้งถัดไป":"ปิดคำแปลสดแล้ว");
+        });
+        liveOption.setOn(getSharedPreferences("hansub",MODE_PRIVATE).getBoolean("live_draft",true),false);
         localStatus=Glass.text(this,"",13,Glass.TEXT2,false);
         add(card,localStatus,14);
         localButton=Glass.button(this,"",Glass.ACCENT,Glass.ON_ACCENT);
