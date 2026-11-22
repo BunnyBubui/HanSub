@@ -9,6 +9,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.Arrays;
 
 /**
  * The on-device speech model files: SenseVoice (Chinese speech to text) and Silero VAD (finds where
@@ -22,6 +23,11 @@ final class LocalModels {
     private static final String HF =
             "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09/resolve/main/";
     static final String MODEL = "model.int8.onnx", TOKENS = "tokens.txt", VAD = "silero_vad.onnx";
+    /** 3D-Speaker CAM++: a voice fingerprint, used to tell speakers apart. Optional. */
+    static final String SPEAKER = "campplus_sv_zh-cn_16k-common.onnx";
+    private static final String[] SPEAKER_FILE = {SPEAKER,
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"
+                    + "3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx", "5000000"};
 
     /** File name, address, and the smallest size a complete file can have (rejects error pages). */
     private static final String[][] FILES = {
@@ -54,6 +60,11 @@ final class LocalModels {
         return true;
     }
 
+    static boolean speakerReady(Context c) {
+        File f = file(c, SPEAKER);
+        return f.isFile() && f.length() >= Long.parseLong(SPEAKER_FILE[2]);
+    }
+
     static long sizeOnDisk(Context c) {
         long sum = 0;
         File[] files = dir(c).listFiles();
@@ -74,7 +85,9 @@ final class LocalModels {
             try {
                 File dir = dir(app);
                 if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("สร้างโฟลเดอร์ไม่ได้");
-                for (String[] f : FILES) {
+                String[][] all = Arrays.copyOf(FILES, FILES.length + 1);
+                all[FILES.length] = SPEAKER_FILE;
+                for (String[] f : all) {
                     File target = file(app, f[0]);
                     long min = Long.parseLong(f[2]);
                     if (target.isFile() && target.length() >= min) continue;

@@ -13,7 +13,9 @@ import com.k2fsa.sherpa.onnx.SpeechSegment;
 import com.k2fsa.sherpa.onnx.Vad;
 import com.k2fsa.sherpa.onnx.VadModelConfig;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
@@ -31,7 +33,8 @@ final class LocalAsr implements MicFeeder.AudioListener {
     interface Listener {
         void onPartial(String chinese);
 
-        void onFinal(String chinese, long decodeMs);
+        /** One finished stretch of speech, cut where the voice changes: text and speaker number per piece. */
+        void onFinal(List<String> chinese, List<Integer> speakers, long decodeMs);
     }
 
     private static final int RATE = MicFeeder.RATE;
@@ -41,6 +44,8 @@ final class LocalAsr implements MicFeeder.AudioListener {
     private final OfflineRecognizer recognizer;
     private final Vad vad;
     private final Listener listener;
+    /** Null when the speaker model is missing or switched off. */
+    private final SpeakerTracker speakers;
     private final LinkedBlockingQueue<float[]> queue = new LinkedBlockingQueue<>(3000);
     private Thread worker;
     private volatile boolean alive;
@@ -83,6 +88,17 @@ final class LocalAsr implements MicFeeder.AudioListener {
         vadConfig.setSampleRate(RATE);
         vadConfig.setNumThreads(1);
         vad = new Vad(null, vadConfig);
+
+        SpeakerTracker tracker = null;
+        if (c.getSharedPreferences("hansub", Context.MODE_PRIVATE).getBoolean("speaker_split", true)
+                && LocalModels.speakerReady(c)) {
+            try {
+                tracker = new SpeakerTracker(c);
+            } catch (RuntimeException e) {
+                tracker = null;
+            }
+        }
+        speakers = tracker;
     }
 
     void start() {
@@ -109,6 +125,7 @@ final class LocalAsr implements MicFeeder.AudioListener {
         try {
             vad.release();
             recognizer.release();
+            if (speakers != null) speakers.release();
         } catch (RuntimeException ignored) {
             // Already released.
         }
@@ -173,10 +190,20 @@ final class LocalAsr implements MicFeeder.AudioListener {
                 SpeechSegment segment = vad.front();
                 vad.pop();
                 long t0 = SystemClock.elapsedRealtime();
-                String text = decode(segment.getSamples());
+                float[] seg = segment.getSamples();
+                List<String> texts = new ArrayList<>();
+                List<Integer> who = new ArrayList<>();
+                List<int[]> pieces = speakers != null ? speakers.split(seg)
+                        : SpeakerSplit.pieces(new ArrayList<>(), seg.length);
+                for (int[] p : pieces) {
+                    String text = decode(Arrays.copyOfRange(seg, p[0], p[1]));
+                    if (text.isEmpty()) continue;
+                    texts.add(text);
+                    who.add(speakers != null ? speakers.label(seg, p[0], p[1]) : 0);
+                }
                 long ms = SystemClock.elapsedRealtime() - t0;
                 lastDecodeMs = ms;
-                if (!text.isEmpty()) listener.onFinal(text, ms);
+                if (!texts.isEmpty()) listener.onFinal(texts, who, ms);
                 finished = true;
             }
             if (finished) {

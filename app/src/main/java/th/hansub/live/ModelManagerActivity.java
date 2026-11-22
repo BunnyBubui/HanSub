@@ -49,6 +49,7 @@ public class ModelManagerActivity extends Activity {
     private Notice notice;
     private Option fastOption, pivotOption, cloudFastOption, cloudQualityOption, defaultSpeech, offlineSpeech, ownMicOption, systemMicOption, playbackOption, localEngineOption, systemEngineOption;
     private TextView localStatus;
+    private Option speakerOption;
     private Glass.Btn localButton;
     private SpeechRecognizer speechDownloader;
 
@@ -207,6 +208,15 @@ public class ModelManagerActivity extends Activity {
         localEngineOption.setOnClickListener(v->selectEngine("local"));
         systemEngineOption=option(card,"ตัวรู้จำเสียงของ Android • แบบเดิม","ใช้เมื่อยังไม่มีโมเดล หรือเครื่องช้ามาก");
         systemEngineOption.setOnClickListener(v->selectEngine("system"));
+        speakerOption=option(card,"แยกเสียงผู้พูด",
+                "ตัดซับตรงที่เสียงคนพูดเปลี่ยน และใส่สีคนละสีให้แต่ละเสียง ต้องโหลดเพิ่มประมาณ 28 MB");
+        speakerOption.setOnClickListener(v->{
+            boolean on=!getSharedPreferences("hansub",MODE_PRIVATE).getBoolean("speaker_split",true);
+            getSharedPreferences("hansub",MODE_PRIVATE).edit().putBoolean("speaker_split",on).apply();
+            speakerOption.setOn(on,true);
+            notice(on?"เปิดการแยกเสียงผู้พูดแล้ว มีผลเมื่อเริ่มแปลครั้งถัดไป":"ปิดการแยกเสียงผู้พูดแล้ว");
+        });
+        speakerOption.setOn(getSharedPreferences("hansub",MODE_PRIVATE).getBoolean("speaker_split",true),false);
         localStatus=Glass.text(this,"",13,Glass.TEXT2,false);
         add(card,localStatus,14);
         localButton=Glass.button(this,"",Glass.ACCENT,Glass.ON_ACCENT);
@@ -225,6 +235,9 @@ public class ModelManagerActivity extends Activity {
     private void onLocalButton() {
         if (LocalModels.state==LocalModels.RUNNING) {
             LocalModels.cancel();
+        } else if (LocalModels.ready(this) && !LocalModels.speakerReady(this)) {
+            LocalModels.download(this);
+            notice("กำลังโหลดตัวแยกเสียงผู้พูด");
         } else if (LocalModels.ready(this)) {
             LocalModels.delete(this);
             notice("ลบโมเดลถอดเสียงแล้ว");
@@ -246,8 +259,12 @@ public class ModelManagerActivity extends Activity {
             handler.postDelayed(this::refreshLocal,500);
             return;
         }
-        if (LocalModels.ready(this)) {
-            localStatus.setText(LocalModels.NAME+" พร้อมใช้ • "+(LocalModels.sizeOnDisk(this)/1048576)+" MB");
+        if (LocalModels.ready(this) && !LocalModels.speakerReady(this)) {
+            localStatus.setText(LocalModels.NAME+" พร้อมใช้ • ยังไม่มีตัวแยกเสียงผู้พูด");
+            Glass.setButton(localButton,"โหลดตัวแยกเสียงผู้พูด (~28 MB)",Glass.ACCENT,Glass.ON_ACCENT);
+        } else if (LocalModels.ready(this)) {
+            localStatus.setText(LocalModels.NAME+" + ตัวแยกเสียงผู้พูด พร้อมใช้ • "
+                    +(LocalModels.sizeOnDisk(this)/1048576)+" MB");
             Glass.setButton(localButton,"ลบโมเดล",Glass.FILL_STRONG,Glass.TEXT);
         } else {
             localStatus.setText(st==LocalModels.FAILED?"ดาวน์โหลดไม่สำเร็จ: "+LocalModels.error+" กดเพื่อทำต่อจากเดิม"

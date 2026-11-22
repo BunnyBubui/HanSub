@@ -41,6 +41,11 @@ import com.google.mlkit.nl.translate.Translator;
 import com.google.mlkit.nl.translate.TranslatorOptions;
 
 import java.util.ArrayList;
+import java.util.List;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.text.TextUtils;
+import android.text.style.ForegroundColorSpan;
 
 /**
  * Source: microphone through the system recognizer. Does not capture other applications'
@@ -250,7 +255,9 @@ public class LiveTranslateService extends Service implements RecognitionListener
             try {
                 asr=new LocalAsr(this,new LocalAsr.Listener() {
                     @Override public void onPartial(String chinese) {main.post(()->heard(chinese,false));}
-                    @Override public void onFinal(String chinese,long decodeMs) {main.post(()->heard(chinese,true));}
+                    @Override public void onFinal(List<String> chinese,List<Integer> speakers,long decodeMs) {
+                        main.post(()->heardFinal(chinese,speakers));
+                    }
                 });
             } catch (Throwable error) {
                 main.post(()->failure("โหลดโมเดลถอดเสียงไม่ได้: "+error.getClass().getSimpleName()
@@ -284,6 +291,82 @@ public class LiveTranslateService extends Service implements RecognitionListener
             dialogue.record(chinese);
             translate(chinese,true,previous);
         }
+    }
+
+    /** Subtitle colour per speaker number, like fansubs. Speaker 0 stays white. */
+    private static final int[] SPEAKER_COLORS={0xFFFFFFFF,0xFFFFE08A,0xFF9FE3FF,0xFFB8F5B0,0xFFFFB8D9,0xFFD9C8FF};
+
+    /**
+     * A finished stretch of speech, already cut where the voice changes. Each piece is cut again into
+     * sentences, every sentence is translated on its own (short input translates better), and the lines
+     * are shown together, coloured by speaker.
+     */
+    private void heardFinal(List<String> pieces,List<Integer> speakers) {
+        if (!running || !modelsReady || pieces.isEmpty()) return;
+        lastPartialAt=0;
+        List<String> lines=new ArrayList<>();
+        List<Integer> owners=new ArrayList<>();
+        StringBuilder all=new StringBuilder();
+        for (int i=0;i<pieces.size();i++) {
+            all.append(pieces.get(i));
+            for (String sentence:SubText.sentences(pieces.get(i))) {
+                lines.add(sentence);
+                owners.add(speakers.get(i));
+            }
+        }
+        String chinese=all.toString();
+        java.util.List<String> previous=dialogue.previous();
+        dialogue.record(chinese);
+        if (lines.size()==1 && owners.get(0)==0) {
+            translate(chinese,true,previous);
+            return;
+        }
+        captionZh(chinese);
+        final int ticket=++generation;
+        final long startedAt=SystemClock.elapsedRealtime();
+        final String[] thai=new String[lines.size()];
+        final int[] left={lines.size()};
+        String localMode=ModelCatalog.PIVOT.equals(mode)?ModelCatalog.PIVOT:ModelCatalog.FAST;
+        for (int i=0;i<lines.size();i++) {
+            final int index=i;
+            translateOne(localMode,lines.get(i),result->{
+                if (!running || ticket!=generation) return;
+                thai[index]=result==null?"":result;
+                if (--left[0]==0) showLines(thai,owners,localMode,startedAt);
+            });
+        }
+    }
+
+    private void translateOne(String localMode,String chinese,java.util.function.Consumer<String> done) {
+        if (ModelCatalog.PIVOT.equals(localMode) && chineseEnglish!=null && englishThai!=null) {
+            chineseEnglish.translate(chinese)
+                .addOnSuccessListener(english->englishThai.translate(english)
+                    .addOnSuccessListener(done::accept).addOnFailureListener(e->done.accept(null)))
+                .addOnFailureListener(e->done.accept(null));
+        } else if (direct!=null) {
+            direct.translate(chinese).addOnSuccessListener(done::accept).addOnFailureListener(e->done.accept(null));
+        } else {
+            done.accept(null);
+        }
+    }
+
+    private void showLines(String[] thai,List<Integer> owners,String effectiveMode,long startedAt) {
+        lastTranslateMs=SystemClock.elapsedRealtime()-startedAt;
+        TranslationStats.record(this,effectiveMode,lastTranslateMs);
+        boolean dialogueLines=new java.util.HashSet<>(owners).size()>1;
+        SpannableStringBuilder text=new SpannableStringBuilder();
+        // Only the newest three lines fit; older ones were on screen while they were being spoken.
+        int first=Math.max(0,thai.length-3);
+        for (int i=first;i<thai.length;i++) {
+            String line=SubText.fixLeftovers(thai[i],SubText::pinyin);
+            if (line.isEmpty()) continue;
+            if (text.length()>0) text.append('\n');
+            int start=text.length();
+            text.append(dialogueLines?"– "+line:line);
+            int color=SPEAKER_COLORS[Math.floorMod(owners.get(i),SPEAKER_COLORS.length)];
+            text.setSpan(new ForegroundColorSpan(color),start,text.length(),Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        if (text.length()>0) captionTh(text);
     }
 
     /** A thin line under the subtitle: input level, decode and translate time, and how far behind we are. */
@@ -702,10 +785,10 @@ public class LiveTranslateService extends Service implements RecognitionListener
         main.post(()->{if (zhView!=null && running) zhView.setText(chinese);});
     }
 
-    private void captionTh(String thai) {
+    private void captionTh(CharSequence thai) {
         main.post(()->{
             if (thView==null || !running) return;
-            boolean changed=!thai.contentEquals(thView.getText());
+            boolean changed=!TextUtils.equals(thai.toString(),thView.getText().toString());
             thView.setText(thai);
             if (changed && !Motion.reduced(this)) {
                 thView.setAlpha(0.35f);

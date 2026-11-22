@@ -21,4 +21,14 @@ public class SubTextTest {
     @Test public void emptyRomanizationJustDropsTheRun() {
         assertEquals("ชื่อ คือ", SubText.fixLeftovers("ชื่อ李คือ", h -> ""));
     }
+
+    @Test public void sentencesSplitAfterEndMarks() {
+        assertEquals(java.util.Arrays.asList("我们现在就出发吧。", "你跟不跟我来？好。"),
+                SubText.sentences("我们现在就出发吧。你跟不跟我来？好。"));
+    }
+
+    @Test public void textWithoutMarksStaysOneSentence() {
+        assertEquals(java.util.Collections.singletonList("老人家你我不过初遇"), SubText.sentences("老人家你我不过初遇"));
+        assertEquals(0, SubText.sentences("  ").size());
+    }
 }

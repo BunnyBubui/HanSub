@@ -13,7 +13,28 @@ final class SubText {
     private static final Pattern HAN = Pattern.compile("[\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uF900-\\uFAFF]+");
     private static final Pattern CJK_PUNCT = Pattern.compile("[，。、；：！？「」『』（）《》…]");
 
+    private static final Pattern SENTENCE_END = Pattern.compile("(?<=[。！？!?；;…])");
+
     private SubText() {}
+
+    /**
+     * Cuts Chinese text after sentence-ending marks. Pieces shorter than four characters are joined to the
+     * one before, so a lone "好。" does not become its own subtitle line.
+     */
+    static java.util.List<String> sentences(String chinese) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        if (chinese == null) return out;
+        for (String part : SENTENCE_END.split(chinese.trim())) {
+            String p = part.trim();
+            if (p.isEmpty()) continue;
+            if (!out.isEmpty() && (p.length() < 4 || out.get(out.size() - 1).length() < 4)) {
+                out.set(out.size() - 1, out.get(out.size() - 1) + p);
+            } else {
+                out.add(p);
+            }
+        }
+        return out;
+    }
 
     /**
      * Replaces every Chinese run left in the Thai text by [romanize] of it, and turns Chinese
