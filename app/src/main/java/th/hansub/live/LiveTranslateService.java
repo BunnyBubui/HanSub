@@ -69,7 +69,17 @@ public class LiveTranslateService extends Service implements RecognitionListener
     /** On-device Chinese speech to text (SenseVoice). Null when the system recognizer is used instead. */
     private LocalAsr localAsr;
     private TextView statsView;
-    private volatile long lastTranslateMs;
+    /** On-device Hy-MT2 translator. Null until its model has loaded, and when it is off or unsupported. */
+    private LocalTranslator mt;
+    /** Short reason shown in the stats line when the local translator could not start. */
+    private String mtNote="";
+    /** Batch number of the oldest subtitle still on screen. The translator skips sentences older than this. */
+    private volatile int oldestShownSeq;
+    /** Which sentence each shown line is: (batch number << 8) | position in the batch. */
+    private final List<Integer> shownKeys=new ArrayList<>();
+    /** Hy-MT2 answers that arrived before their ML Kit draft was shown. */
+    private final java.util.HashMap<Integer,String> mtResults=new java.util.HashMap<>();
+    private volatile long lastTranslateMs,lastMtMs;
     private Translator direct, chineseEnglish, englishThai;
     private String mode=ModelCatalog.FAST;
     private boolean running,modelsReady;
@@ -185,6 +195,7 @@ public class LiveTranslateService extends Service implements RecognitionListener
     private void readyForSpeech() {
         if (!running) return;
         modelsReady=true;
+        startLocalTranslator();
         caption("中文 → ไทย",ModelCatalog.PIVOT.equals(mode)
                 ?"กำลังฟัง (โหมด Pivot)…":ModelCatalog.isCloud(mode)
                 ?"กำลังฟัง (Cloud + ML Kit fallback)…":"กำลังฟัง (โหมด Fast)…");
@@ -242,6 +253,31 @@ public class LiveTranslateService extends Service implements RecognitionListener
             }
         }
         return i;
+    }
+
+    /**
+     * Loads Hy-MT2 in the background. Until it is ready, and for any sentence it skips, the ML Kit draft stays.
+     * Off when the model is not downloaded, the phone is 32-bit, the user turned it off, or Cloud mode is on.
+     */
+    private void startLocalTranslator() {
+        android.content.SharedPreferences prefs=getSharedPreferences("hansub",MODE_PRIVATE);
+        if (!prefs.getBoolean("mt_local",true) || ModelCatalog.isCloud(mode)) return;
+        if (!TranslatorModel.ready(this)) return;
+        if (!LocalTranslator.supported()) {mtNote="แปลในเครื่องใช้ได้เฉพาะเครื่อง 64 บิต";return;}
+        mtNote="กำลังโหลด Hy-MT2";
+        new Thread(()->{
+            try {
+                LocalTranslator opened=LocalTranslator.open(this);
+                main.post(()->{
+                    if (!running) {new Thread(opened::close,"hansub-mt-close").start();return;}
+                    mt=opened;
+                    mtNote="";
+                });
+            } catch (Throwable error) {
+                String why=error.getMessage()==null?error.getClass().getSimpleName():error.getMessage();
+                main.post(()->mtNote="Hy-MT2 ใช้ไม่ได้ ("+why+")");
+            }
+        },"hansub-mt-load").start();
     }
 
     /**
@@ -335,6 +371,7 @@ public class LiveTranslateService extends Service implements RecognitionListener
         final String[] thai=new String[lines.size()];
         final int[] left={lines.size()};
         String localMode=ModelCatalog.PIVOT.equals(mode)?ModelCatalog.PIVOT:ModelCatalog.FAST;
+        askLocalTranslator(seq,lines);
         for (int i=0;i<lines.size();i++) {
             final int index=i;
             translateOne(localMode,lines.get(i),result->main.post(()->{
@@ -342,9 +379,38 @@ public class LiveTranslateService extends Service implements RecognitionListener
                 if (--left[0]>0) return;
                 lastTranslateMs=SystemClock.elapsedRealtime()-startedAt;
                 TranslationStats.record(this,localMode,lastTranslateMs);
-                readyBatches.put(seq,new Object[]{thai,owners});
+                readyBatches.put(seq,new Object[]{thai,owners,seq});
                 flushBatches();
             }));
+        }
+    }
+
+    /** Sends each sentence to Hy-MT2, if it is loaded. The better translation replaces the draft when it arrives. */
+    private void askLocalTranslator(int seq,List<String> lines) {
+        LocalTranslator translator=mt;
+        if (translator==null) return;
+        String names=getSharedPreferences("hansub",MODE_PRIVATE).getString("character_names","");
+        for (int i=0;i<lines.size();i++) {
+            final int key=(seq<<8)|Math.min(i,255);
+            String sentence=lines.get(i);
+            translator.submit(TranslatePrompt.build(sentence,names),TranslatePrompt.maxNewTokens(sentence),
+                    ()->running && (key>>8)>=oldestShownSeq,
+                    thai->main.post(()->applyLocalTranslation(key,thai)));
+        }
+    }
+
+    /** Swaps a draft line for the Hy-MT2 translation. If the draft has not been shown yet, it is used instead of the draft. */
+    private void applyLocalTranslation(int key,String thai) {
+        if (!running) return;
+        String line=SubText.fixLeftovers(thai,SubText::pinyin);
+        if (line.isEmpty()) return;
+        lastMtMs=mt==null?0:mt.lastMs;
+        int at=shownKeys.indexOf(key);
+        if (at>=0) {
+            shownLines.set(at,line);
+            updateThai(renderLines());
+        } else if (shownKeys.isEmpty() || key>shownKeys.get(shownKeys.size()-1)) {
+            mtResults.put(key,line);
         }
     }
 
@@ -355,16 +421,25 @@ public class LiveTranslateService extends Service implements RecognitionListener
             Object[] batch=readyBatches.remove(batchShown++);
             String[] thai=(String[])batch[0];
             List<Integer> owners=(List<Integer>)batch[1];
+            int seq=(Integer)batch[2];
             for (int i=0;i<thai.length;i++) {
-                String line=SubText.fixLeftovers(thai[i],SubText::pinyin);
+                int key=(seq<<8)|Math.min(i,255);
+                String better=mtResults.remove(key);
+                String line=better!=null?better:SubText.fixLeftovers(thai[i],SubText::pinyin);
                 if (line.isEmpty()) continue;
                 shownLines.add(line);
                 shownOwners.add(owners.get(i));
+                shownKeys.add(key);
                 changed=true;
             }
         }
         // Two lines roll like film subtitles: the newest at the bottom, the one before it above.
-        while (shownLines.size()>2) {shownLines.remove(0);shownOwners.remove(0);}
+        while (shownLines.size()>2) {shownLines.remove(0);shownOwners.remove(0);shownKeys.remove(0);}
+        if (!shownKeys.isEmpty()) {
+            int oldest=shownKeys.get(0);
+            oldestShownSeq=oldest>>8;
+            mtResults.keySet().removeIf(k->k<oldest);
+        }
         if (changed && running) captionTh(renderLines());
     }
 
@@ -406,7 +481,8 @@ public class LiveTranslateService extends Service implements RecognitionListener
                 StringBuilder meter=new StringBuilder();
                 for (int i=0;i<5;i++) meter.append(i<bars?'\u25AE':'\u25AF');
                 String behind=asr.backlog>1?String.format(java.util.Locale.US," · ค้าง %.1fs",asr.backlog*0.2f):"";
-                statsView.setText("เสียง "+meter+" · ถอด "+asr.lastDecodeMs+"ms · แปล "+lastTranslateMs+"ms"+behind);
+                String better=mt!=null?" · Hy-MT2 "+lastMtMs+"ms":mtNote.isEmpty()?"":" · "+mtNote;
+                statsView.setText("เสียง "+meter+" · ถอด "+asr.lastDecodeMs+"ms · ร่าง "+lastTranslateMs+"ms"+better+behind);
                 main.postDelayed(this,500);
             }
         });
@@ -823,6 +899,11 @@ public class LiveTranslateService extends Service implements RecognitionListener
         });
     }
 
+    /** Changes the Thai text in place, without the rise animation: used when a better translation replaces a draft. */
+    private void updateThai(CharSequence thai) {
+        main.post(()->{if (thView!=null && running) thView.setText(thai);});
+    }
+
     private void caption(String chinese,String thai) {
         main.post(()->{
             if (zhView!=null && thView!=null && running) {
@@ -851,6 +932,7 @@ public class LiveTranslateService extends Service implements RecognitionListener
         if (recognizer!=null) {recognizer.cancel();recognizer.destroy();recognizer=null;}
         if (feeder!=null) {feeder.setListener(null);feeder.stop();feeder=null;}
         if (localAsr!=null) {localAsr.stop();localAsr=null;}
+        if (mt!=null) {LocalTranslator closing=mt;mt=null;new Thread(closing::close,"hansub-mt-close").start();}
         releaseProjection();
         closeSessionSound();
         if (direct!=null) {direct.close();direct=null;}

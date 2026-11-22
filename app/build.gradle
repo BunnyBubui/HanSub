@@ -2,6 +2,8 @@ plugins { id 'com.android.application' }
 android {
     namespace 'th.hansub.live'
     compileSdk 35
+    // Pinned so a build does not depend on which NDK the machine happens to have.
+    ndkVersion '27.2.12479018'
     defaultConfig {
         applicationId 'th.hansub.live'
         minSdk 26
@@ -11,6 +13,13 @@ android {
         versionName '0.5.0'
         // The speech engine ships native code; phones from the last ten years are all ARM.
         ndk { abiFilters 'arm64-v8a', 'armeabi-v7a' }
+        // The local translator (llama.cpp) is built for 64-bit ARM only.
+        externalNativeBuild { cmake { abiFilters 'arm64-v8a' } }
+    }
+    externalNativeBuild { cmake { path 'src/main/cpp/CMakeLists.txt' } }
+    packaging {
+        // llama.cpp loads its CPU code variants from the app's native library folder, so the files must be unpacked there.
+        jniLibs { useLegacyPackaging = true }
     }
     signingConfigs {
         // One fixed key for every build. A debug key that changes per build makes Android refuse to update the app.

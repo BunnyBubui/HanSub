@@ -51,6 +51,9 @@ public class ModelManagerActivity extends Activity {
     private TextView localStatus;
     private Option speakerOption;
     private Glass.Btn localButton;
+    private Option mtOption;
+    private TextView mtStatus;
+    private Glass.Btn mtButton;
     private SpeechRecognizer speechDownloader;
 
     @Override public void onCreate(Bundle state) {
@@ -75,6 +78,7 @@ public class ModelManagerActivity extends Activity {
         buildPerformance();
         buildCloud();
         buildLocalEngine();
+        buildLocalTranslator();
         buildAudioPath();
         buildSpeech();
         TextView credit=Glass.text(this,"Powered by Google Translate",12,Glass.TEXT3,false);
@@ -270,6 +274,71 @@ public class ModelManagerActivity extends Activity {
             localStatus.setText(st==LocalModels.FAILED?"ดาวน์โหลดไม่สำเร็จ: "+LocalModels.error+" กดเพื่อทำต่อจากเดิม"
                     :"ยังไม่ได้ดาวน์โหลด");
             Glass.setButton(localButton,st==LocalModels.FAILED?"ดาวน์โหลดต่อ":"ดาวน์โหลดโมเดล (~230 MB)",
+                    Glass.ACCENT,Glass.ON_ACCENT);
+        }
+    }
+
+    private void buildLocalTranslator() {
+        LinearLayout card=section("ตัวแปลในเครื่อง • Hy-MT2",
+                "โมเดลแปลของ Tencent ที่ฝึกมาเพื่อแปลโดยตรง ซับร่างจาก ML Kit ขึ้นก่อนทันที แล้ว Hy-MT2 แปลทับเมื่อเสร็จ "
+                +"ใช้รายชื่อ \"ชื่อจีน=ชื่อไทย\" จากช่อง Context AI ด้านบน");
+        mtOption=option(card,"ใช้ Hy-MT2 แปลทับร่าง","ต้องโหลดโมเดลก่อน มีผลเมื่อเริ่มแปลครั้งถัดไป");
+        mtOption.setOnClickListener(v->{
+            boolean on=!getSharedPreferences("hansub",MODE_PRIVATE).getBoolean("mt_local",true);
+            getSharedPreferences("hansub",MODE_PRIVATE).edit().putBoolean("mt_local",on).apply();
+            mtOption.setOn(on,true);
+            notice(on?"เปิดแล้ว มีผลเมื่อเริ่มแปลครั้งถัดไป":"ปิดแล้ว จะใช้ ML Kit อย่างเดียว");
+        });
+        mtOption.setOn(getSharedPreferences("hansub",MODE_PRIVATE).getBoolean("mt_local",true),false);
+        mtStatus=Glass.text(this,"",13,Glass.TEXT2,false);
+        add(card,mtStatus,14);
+        mtButton=Glass.button(this,"",Glass.ACCENT,Glass.ON_ACCENT);
+        mtButton.setOnClickListener(v->onMtButton());
+        add(card,mtButton,10);
+        add(card,Glass.text(this,memoryWarning(),12,Glass.TEXT3,false),10);
+        refreshMt();
+    }
+
+    /** The model needs about 1.1 GB of RAM while translating, on top of the speech model. */
+    private String memoryWarning() {
+        android.app.ActivityManager manager=(android.app.ActivityManager)getSystemService(ACTIVITY_SERVICE);
+        android.app.ActivityManager.MemoryInfo info=new android.app.ActivityManager.MemoryInfo();
+        manager.getMemoryInfo(info);
+        double gb=info.totalMem/1073741824.0;
+        String base="ใช้ได้เฉพาะเครื่อง 64 บิต ไฟล์ประมาณ 1.1 GB และกิน RAM เพิ่มประมาณ 1.5 GB ตอนแปล "
+                +"ความเร็วขึ้นกับชิป ดูตัวเลข Hy-MT2 ในบรรทัดสถิติใต้ซับ ถ้าเกินราว 1500ms ให้ปิดตัวเลือกนี้ ";
+        String ram=String.format(java.util.Locale.US,"เครื่องนี้มี RAM ประมาณ %.1f GB",gb);
+        return base+(gb<5.5?ram+" ซึ่งอาจตึง และระบบอาจปิดแอปเอง":ram);
+    }
+
+    private void onMtButton() {
+        if (TranslatorModel.state==TranslatorModel.RUNNING) {
+            TranslatorModel.cancel();
+        } else if (TranslatorModel.ready(this)) {
+            TranslatorModel.delete(this);
+            notice("ลบโมเดล Hy-MT2 แล้ว");
+        } else {
+            TranslatorModel.download(this);
+            notice("เริ่มดาวน์โหลด ไฟล์ใหญ่ ควรใช้ Wi-Fi");
+        }
+        refreshMt();
+    }
+
+    private void refreshMt() {
+        if (mtStatus==null) return;
+        int st=TranslatorModel.state;
+        if (st==TranslatorModel.RUNNING) {
+            long done=TranslatorModel.doneBytes/1048576, total=TranslatorModel.totalBytes/1048576;
+            mtStatus.setText(total>0?"กำลังดาวน์โหลด "+done+" / "+total+" MB":"กำลังดาวน์โหลด "+done+" MB…");
+            Glass.setButton(mtButton,"ยกเลิก",Glass.FILL_STRONG,Glass.TEXT);
+            handler.postDelayed(this::refreshMt,500);
+        } else if (TranslatorModel.ready(this)) {
+            mtStatus.setText(TranslatorModel.NAME+" พร้อมใช้ • "+(TranslatorModel.sizeOnDisk(this)/1048576)+" MB");
+            Glass.setButton(mtButton,"ลบโมเดล",Glass.FILL_STRONG,Glass.TEXT);
+        } else {
+            mtStatus.setText(st==TranslatorModel.FAILED?"ดาวน์โหลดไม่สำเร็จ: "+TranslatorModel.error+" กดเพื่อทำต่อจากเดิม"
+                    :"ยังไม่ได้ดาวน์โหลด");
+            Glass.setButton(mtButton,st==TranslatorModel.FAILED?"ดาวน์โหลดต่อ":"ดาวน์โหลดโมเดล (~1.1 GB)",
                     Glass.ACCENT,Glass.ON_ACCENT);
         }
     }

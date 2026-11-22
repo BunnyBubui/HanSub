@@ -13,3 +13,7 @@ captures/
 
 # Fetched by CI
 app/libs/
+
+# Fetched by CMake at a pinned commit (see app/src/main/cpp/CMakeLists.txt)
+app/src/main/cpp/llama.cpp/
+.cxx/
